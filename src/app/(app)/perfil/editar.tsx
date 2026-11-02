@@ -1,0 +1,229 @@
+import { Image } from 'expo-image';
+import { Stack, useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { Text } from '@/components/ui/Texto';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { EncabezadoMarca } from '@/components/ui/EncabezadoMarca';
+import { EmptyState, ErrorState, LoadingState } from '@/components/catalog/CatalogState';
+import { ComunaFieldPicker } from '@/components/forms/ComunaFieldPicker';
+import { Button } from '@/components/ui/Button';
+import { FormScroll } from '@/components/ui/FormScroll';
+import { TextField } from '@/components/ui/TextField';
+import { Colors, Fonts, Radius, Spacing } from '@/constants/theme';
+import { Comuna, MiPerfil, actualizarPerfil, fetchComunas, fetchMiPerfil } from '@/lib/catalog';
+import { getErrorMessage } from '@/lib/errors';
+import { PickedImage, pickAndCompressImage, uploadCompressedImage } from '@/lib/images';
+import { supabase, usuarioActual } from '@/lib/supabase';
+import { MENSAJE_CELULAR, celularLocal, isValidChileanPhone, normalizeChileanPhone, soloCelular } from '@/lib/validation';
+import { useSession } from '@/providers/SessionProvider';
+import { FotoRemota } from '@/components/ui/FotoRemota';
+
+export default function EditarPerfilScreen() {
+  const router = useRouter();
+  const { refreshProfile } = useSession();
+
+  const [perfil, setPerfil] = useState<MiPerfil | null>(null);
+  const [comunas, setComunas] = useState<Comuna[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [perfilData, comunasData] = await Promise.all([fetchMiPerfil(), fetchComunas()]);
+      setPerfil(perfilData);
+      setComunas(comunasData);
+    } catch (err) {
+      setError(getErrorMessage(err, 'Error desconocido.'));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <Stack.Screen options={{ headerShown: false }} />
+
+      <EncabezadoMarca subtitulo="Editar perfil" />
+
+      {loading && <LoadingState />}
+      {error && <ErrorState message={error} onRetry={load} />}
+      {!loading && !error && !perfil && (
+        <EmptyState title="No encontramos tu perfil" message="Intenta cerrar sesión y volver a entrar." />
+      )}
+      {!loading && !error && perfil && (
+        <View style={styles.card}>
+          <EditarPerfilForm
+            perfil={perfil}
+            comunas={comunas}
+            onSaved={async () => {
+              await refreshProfile();
+              router.back();
+            }}
+          />
+        </View>
+      )}
+    </SafeAreaView>
+  );
+}
+
+function EditarPerfilForm({
+  perfil,
+  comunas,
+  onSaved,
+}: {
+  perfil: MiPerfil;
+  comunas: Comuna[];
+  onSaved: () => void;
+}) {
+  const [nombre, setNombre] = useState(perfil.nombre);
+  const [telefono, setTelefono] = useState(celularLocal(perfil.telefono_contacto));
+  const [logo, setLogo] = useState<PickedImage | null>(null);
+  const [logoUrl, setLogoUrl] = useState(perfil.logo_url);
+  const [comunaId, setComunaId] = useState<string | null>(perfil.comuna_id);
+
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function handlePickLogo() {
+    try {
+      const image = await pickAndCompressImage({ uso: 'logo' });
+      if (image) setLogo(image);
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo abrir la galería.'));
+    }
+  }
+
+  async function handleGuardar() {
+    setError(null);
+
+    if (nombre.trim().length === 0) {
+      setError('Ponle un nombre a tu negocio.');
+      return;
+    }
+    if (!isValidChileanPhone(telefono)) {
+      setError(MENSAJE_CELULAR);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const { data: auth } = await usuarioActual();
+      const finalLogoUrl = logo ? await uploadCompressedImage('logos', auth.user!.id, logo, 'logo') : logoUrl;
+
+      await actualizarPerfil({
+        nombre: nombre.trim(),
+        telefonoContacto: normalizeChileanPhone(telefono),
+        comunaId,
+        logoUrl: finalLogoUrl,
+      });
+
+      onSaved();
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudieron guardar los cambios.'));
+      setSaving(false);
+    }
+  }
+
+  // `FormScroll` resuelve el teclado igual que en toda la app: reserva su
+  // alto y corre el formulario si el campo enfocado quedaría tapado.
+  return (
+    <FormScroll contentContainerStyle={styles.formContent}>
+      <Pressable onPress={handlePickLogo} style={styles.avatarWrapper}>
+        {logo ? (
+          <Image source={{ uri: logo.uri }} style={styles.avatarImage} contentFit="cover" />
+        ) : logoUrl ? (
+          <FotoRemota uri={logoUrl} ancho={72} style={styles.avatarImage} />
+        ) : (
+          <View style={styles.avatarPlaceholder} />
+        )}
+      </Pressable>
+
+      <TextField label="Nombre" value={nombre} onChangeText={setNombre} autoCapitalize="words" />
+
+      <ComunaFieldPicker label="Comuna" comunas={comunas} selectedId={comunaId} onSelect={setComunaId} />
+
+      <TextField
+        label="Teléfono"
+        value={telefono}
+        onChangeText={(t) => setTelefono(soloCelular(t))}
+        keyboardType="number-pad"
+        maxLength={9}
+        placeholder="912345678"
+        hint="9 y ocho dígitos (sin el +56, lo agregamos nosotros)"
+      />
+
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+      {saving ? (
+        <ActivityIndicator color={Colors.accent} style={{ marginTop: Spacing.three }} />
+      ) : (
+        <Button label="Guardar cambios" onPress={handleGuardar} />
+      )}
+    </FormScroll>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.three,
+    paddingBottom: Spacing.two,
+  },
+  backLabel: {
+    fontFamily: Fonts.medium,
+    color: Colors.text,
+    fontSize: 15,
+    width: 70,
+  },
+  topTitle: {
+    fontFamily: Fonts.semiBold,
+    color: Colors.text,
+    fontSize: 15,
+  },
+  card: {
+    flex: 1,
+    backgroundColor: Colors.background,
+    borderTopLeftRadius: Radius.card,
+    borderTopRightRadius: Radius.card,
+  },
+  formContent: {
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.five,
+    paddingBottom: Spacing.six,
+  },
+  avatarWrapper: {
+    alignSelf: 'center',
+    marginBottom: Spacing.two,
+  },
+  avatarPlaceholder: {
+    width: 72,
+    height: 72,
+    borderRadius: Radius.avatar,
+    backgroundColor: '#D9D9D9',
+  },
+  avatarImage: {
+    width: 72,
+    height: 72,
+    borderRadius: Radius.avatar,
+  },
+  errorText: {
+    fontFamily: Fonts.light,
+    marginTop: Spacing.three,
+    fontSize: 13,
+    color: Colors.danger,
+  },
+});

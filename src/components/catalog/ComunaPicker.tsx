@@ -1,0 +1,266 @@
+import { memo, useMemo, useState } from 'react';
+import { useWindowDimensions } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
+import { KeyboardAvoidingView, Modal, Pressable, StyleSheet, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { Ionicons } from '@expo/vector-icons';
+
+import { TituloPosicionado } from '@/components/ui/BrandLogo';
+import { CampoCentrado } from '@/components/ui/CampoCentrado';
+import { Colors, Fonts, Spacing } from '@/constants/theme';
+import type { Comuna } from '@/lib/catalog';
+import { PERIMETRO_ALTO, useMarca } from '@/lib/marca';
+import { REJILLA, u } from '@/lib/rejilla';
+import { normalizarTexto } from '@/lib/text';
+
+type Props = {
+  comunas: Comuna[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  /**
+   * Se avisa al abrir el selector, para volver a pedir la lista: el
+   * administrador puede mostrar, ocultar o eliminar comunas mientras alguien
+   * tiene la app abierta, y quien solo mira el catálogo nunca cambia de
+   * pantalla, así que este es el único momento natural para refrescarla.
+   */
+  alAbrir?: () => void;
+  /**
+   * Nombre de la comuna elegida, si ya se sabe. El inicio lo pide aparte —una
+   * sola fila— para no esperar a que llegue la lista completa de comunas, que
+   * solo hace falta al abrir este selector.
+   */
+  nombre?: string | null;
+  /** Estilo del nombre en el botón (por ejemplo, rojo y grande en el perfil). */
+  estiloEtiqueta?: StyleProp<TextStyle>;
+  /**
+   * Para elegir otra cosa con la misma pantalla (por ejemplo, la categoría
+   * del comercio): lo que va bajo el título en vez de "Chile", y abierta
+   * desde afuera (sin el botón propio).
+   */
+  subtitulo?: string;
+  abierta?: boolean;
+  onCerrar?: () => void;
+  sinResultados?: string;
+};
+
+type Fila = { id: string | null; label: string };
+
+/**
+ * "Filtro Geográfico Hiperlocal" del plan: selector de comuna en la barra
+ * superior que adapta la vitrina al instante. Con las ~346 comunas del país
+ * esto necesita buscador y una lista
+ * virtualizada — mostrarlas todas de una en un View sin buscador se sentía
+ * lento para abrir y ni siquiera se podía hacer scroll.
+ */
+function ComunaPickerComponent({
+  comunas,
+  selectedId,
+  onSelect,
+  nombre,
+  alAbrir,
+  estiloEtiqueta,
+  subtitulo = 'Chile',
+  abierta,
+  onCerrar,
+  sinResultados = 'No encontramos esa comuna.',
+}: Props) {
+  // El nombre escala con el ancho de la pantalla, en la misma rejilla que el
+  // título (45 de 1000), para que el bloque completo se vea igual de
+  // proporcionado en un teléfono chico y en una tablet. Los topes evitan los
+  // dos extremos: ilegible en pantallas muy angostas, enorme en muy anchas.
+  const { width } = useWindowDimensions();
+  const tamanoNombre = Math.min(26, Math.max(14, Math.round((width * 45) / 1000)));
+
+  // El título de esta pantalla es el mismo de la app, con sus medidas.
+  const marca = useMarca();
+  // La barra de botones de Android se dibuja encima: sin esto, "Cerrar"
+  // quedaba debajo de ella y no se podía tocar.
+  const insets = useSafeAreaInsets();
+  const unidad = width / 1000;
+  const altoPerimetro = Math.round(PERIMETRO_ALTO * unidad);
+  const margen = u(REJILLA.margenLateral);
+
+  const [abiertaPropia, setOpen] = useState(false);
+  const controlada = abierta !== undefined;
+  const open = controlada ? abierta : abiertaPropia;
+  const [busqueda, setBusqueda] = useState('');
+  // Sin comuna elegida dice "Comuna", como el documento EDIT APP: es el
+  // hueco donde va el nombre, no una comuna de verdad. Con el permiso de
+  // ubicación se llena solo con la detectada, y si no, con la que la persona
+  // elija; después queda guardada en el teléfono para las próximas veces.
+  const label = comunas.find((c) => c.id === selectedId)?.nombre ?? nombre ?? 'Comuna';
+
+  const filas = useMemo<Fila[]>(() => {
+    const termino = normalizarTexto(busqueda);
+    const comunasFiltradas = termino
+      ? comunas.filter((c) => normalizarTexto(c.nombre).includes(termino))
+      : comunas;
+
+    // Sin "Todas las comunas" (documento EDIT APP): el catálogo es siempre
+    // el de una comuna.
+    return comunasFiltradas.map((c) => ({ id: c.id, label: c.nombre }));
+  }, [comunas, busqueda]);
+
+  function handleClose() {
+    setOpen(false);
+    onCerrar?.();
+    setBusqueda('');
+  }
+
+  function handleSelect(id: string | null) {
+    onSelect(id);
+    handleClose();
+  }
+
+  return (
+    <>
+      {!controlada && (
+      <Pressable
+        onPress={() => {
+          alAbrir?.();
+          setOpen(true);
+        }}
+        hitSlop={8}
+        style={styles.trigger}>
+        {/* Una sola línea: partido en dos, el nombre se metía en el banner.
+            Si no cabe entero se recorta con puntos suspensivos, que es más
+            limpio que empujar el resto del catálogo hacia abajo. */}
+        <Text
+          style={[styles.label, { fontSize: tamanoNombre, lineHeight: Math.round(tamanoNombre * 1.3) }, estiloEtiqueta]}
+          numberOfLines={1}>
+          {label}
+        </Text>
+      </Pressable>
+      )}
+
+      {/* Pantalla completa, no un panel encima del catálogo (documento EDIT
+          APP): el mismo título arriba pero con "Chile" debajo —se está
+          eligiendo el país entero, no una comuna—, el buscador justo donde
+          va el banner, y las comunas centradas. */}
+      <Modal visible={open} animationType="fade" onRequestClose={handleClose}>
+        <KeyboardAvoidingView style={styles.pantalla} behavior="padding">
+          <View style={{ height: altoPerimetro }}>
+            <TituloPosicionado
+              unidad={unidad}
+              altoPerimetro={PERIMETRO_ALTO}
+              medidas={{ centroX: marca.centroX, ancho: marca.ancho, alto: marca.alto, centroY: marca.centroY }}
+              url={marca.url}
+              debajo={
+                <Text style={styles.pais} numberOfLines={1}>
+                  {subtitulo}
+                </Text>
+              }
+            />
+          </View>
+
+          {/* La lupa en vez de "Buscar"; el texto y el
+              cursor siempre al centro. */}
+          <View style={[styles.buscador, { marginHorizontal: margen }]}>
+            <CampoCentrado
+              value={busqueda}
+              onChangeText={setBusqueda}
+              style={styles.buscadorTexto}
+              autoCorrect={false}
+            />
+            {!busqueda && (
+              <Ionicons name="search" size={26} color={Colors.text} style={styles.lupa} pointerEvents="none" />
+            )}
+          </View>
+
+          <FlashList
+            data={filas}
+            keyExtractor={(item) => item.id ?? ''}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={[styles.lista, { paddingBottom: Spacing.four + insets.bottom }]}
+            renderItem={({ item }) => (
+              <Option label={item.label} active={selectedId === item.id} onPress={() => handleSelect(item.id)} />
+            )}
+            ListEmptyComponent={<Text style={styles.sinResultados}>{sinResultados}</Text>}
+          />
+
+        </KeyboardAvoidingView>
+      </Modal>
+    </>
+  );
+}
+
+export const ComunaPicker = memo(ComunaPickerComponent);
+
+function Option({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={styles.option}>
+      <Text style={[styles.optionLabel, active && styles.optionLabelActive]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  // Como en la plantilla: solo el nombre de la comuna bajo el logo, sin
+  // flecha. Sigue siendo tocable (abre el buscador de comunas).
+  trigger: {
+    alignItems: 'center',
+    // El nombre puede ser más ancho que el título (p. ej. "Todas las
+    // comunas"), pero no más que el contenido del catálogo.
+    maxWidth: '85%',
+  },
+  label: {
+    fontFamily: Fonts.delgada,
+    fontSize: 18,
+    lineHeight: 24,
+    color: '#8A8A8A',
+  },
+  pantalla: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  pais: {
+    fontFamily: Fonts.delgada,
+    fontSize: 18,
+    color: '#8A8A8A',
+  },
+  // Cápsula, como el documento EDIT APP.
+  buscador: {
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.five,
+    height: 54,
+  },
+  // Light de verdad (Fonts.light hoy es Medium).
+  buscadorTexto: {
+    fontFamily: Fonts.delgada,
+    fontSize: 18,
+    color: Colors.text,
+  },
+  lupa: {
+    position: 'absolute',
+    right: Spacing.four,
+  },
+  lista: {
+    paddingTop: Spacing.three,
+    paddingHorizontal: Spacing.four,
+  },
+  option: {
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
+  },
+  optionLabel: {
+    fontFamily: Fonts.delgada,
+    fontSize: 24,
+    textAlign: 'center',
+    color: Colors.text,
+  },
+  // La comuna actual, en rojo (no en negrita).
+  optionLabelActive: {
+    color: Colors.accent,
+  },
+  sinResultados: {
+    fontFamily: Fonts.light,
+    paddingVertical: Spacing.four,
+    textAlign: 'center',
+    color: Colors.textMuted,
+    fontSize: 13,
+  },
+});

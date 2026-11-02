@@ -1,0 +1,177 @@
+import { decode } from 'base64-arraybuffer';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
+
+import { FORMATO_RECORTE } from '@/lib/rejilla';
+import { supabase } from '@/lib/supabase';
+
+/**
+ * Reglas de peso/dimensión de imágenes para toda la app. Coordinado con los
+ * límites duros configurados en Supabase Storage (ver migración 0007):
+ * ese es el límite del servidor que no se puede saltar; esto es lo que hace
+ * que casi nunca se llegue a rozarlo, comprimiendo desde el origen.
+ */
+const JPEG_QUALITY = 0.7; // 0-1, calidad de compresión
+
+/**
+ * Ancho máximo al que se guarda cada imagen, según dónde se va a ver.
+ *
+ * Antes había un único límite de 1280 px para todo, y un logo de comercio
+ * —que se muestra en un círculo de unos 90 px— se subía y se descargaba a
+ * 1280 px y 123 KB. Multiplicado por cada tarjeta del catálogo, eso es la
+ * mayor parte de los datos que gasta un usuario al abrir la app, y de la
+ * cuota de transferencia que se paga.
+ *
+ * Los valores son con holgura: el doble o más de lo que mide el hueco en el
+ * teléfono más ancho que se vende, para que la imagen se vea nítida también
+ * en pantallas de mucha densidad y al abrirla a tamaño completo.
+ */
+const ANCHO_MAXIMO = {
+  /** Círculo de ~90 px en el catálogo, ~120 px en el perfil. */
+  logo: 400,
+  /** Foto del producto: ~300 px en la tarjeta, pantalla completa en el detalle. */
+  producto: 900,
+  /** Ocupa el ancho del catálogo, de borde a borde. */
+  banner: 1280,
+  /** El título de la app: como mucho, el 70 % del ancho de la pantalla. */
+  titulo: 1280,
+} as const;
+
+export type UsoImagen = keyof typeof ANCHO_MAXIMO;
+
+export type PickedImage = {
+  uri: string;
+  base64: string;
+  contentType: 'image/jpeg' | 'image/png';
+};
+
+type OpcionesImagen = {
+  aspect?: [number, number];
+  /** Si se abre el recorte del sistema. Para logos no: se respeta la forma original. */
+  recortar?: boolean;
+  /**
+   * JPEG para fotos (pesa poco). PNG para logos: JPEG no tiene transparencia
+   * y un logo con fondo transparente quedaría con un recuadro de color.
+   */
+  formato?: 'jpeg' | 'png';
+  /**
+   * Dónde se va a mostrar, que es lo que decide su tamaño. Por defecto
+   * 'producto', que es el uso más exigente de los normales.
+   */
+  uso?: UsoImagen;
+};
+
+/**
+ * Abre el selector de galería, y devuelve la imagen ya redimensionada y
+ * comprimida a JPEG — nunca el archivo original tal cual lo tenía el
+ * usuario (que puede pesar 10-20MB en un celular moderno).
+ */
+/** Si ya hay una galería abierta (ver pickAndCompressImage). */
+let galeriaAbierta = false;
+
+export async function pickAndCompressImage(
+  opciones: [number, number] | OpcionesImagen = {},
+): Promise<PickedImage | null> {
+  const {
+    aspect: aspectPedido,
+    recortar = true,
+    formato = 'jpeg',
+    uso = 'producto',
+  } = Array.isArray(opciones) ? { aspect: opciones } : opciones;
+  const anchoMaximo = ANCHO_MAXIMO[uso];
+  // Si no se pide una forma, la del lugar donde se va a mostrar (ver
+  // FORMATO_RECORTE): la tarjeta para un producto, el banner para un banner,
+  // cuadrada para la foto de perfil.
+  const formaPorUso = uso === 'producto' ? FORMATO_RECORTE.producto : uso === 'banner' ? FORMATO_RECORTE.banner : FORMATO_RECORTE.perfil;
+  const aspect: [number, number] = aspectPedido ?? [formaPorUso[0], formaPorUso[1]];
+
+  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!permission.granted) {
+    throw new Error('Necesitamos permiso para acceder a tus fotos.');
+  }
+
+  const abrir = () =>
+    ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 1, // la compresión real se hace abajo, con control fino
+      allowsEditing: recortar,
+      // La foto del comercio y la del perfil se muestran en un círculo: el
+      // recorte también es circular, así se ve exactamente lo que va a quedar.
+      // (Solo Android; en iPhone el recorte del sistema es siempre cuadrado.)
+      ...(recortar ? { aspect, shape: uso === 'logo' ? ('oval' as const) : ('rectangle' as const) } : {}),
+    });
+
+  // Una sola galería a la vez: un segundo toque mientras se abre la primera
+  // hacía fallar a Android ("unregistered ActivityResultLauncher").
+  if (galeriaAbierta) return null;
+  galeriaAbierta = true;
+  let result: ImagePicker.ImagePickerResult;
+  try {
+    try {
+      result = await abrir();
+    } catch (err) {
+      // Si Android recreó la pantalla (por ejemplo, al volver de otra app),
+      // el selector tarda un instante en volver a registrarse: se reintenta
+      // una vez antes de avisar.
+      if (!/unregistered ActivityResultLauncher/i.test(String((err as Error)?.message ?? err))) throw err;
+      await new Promise((listo) => setTimeout(listo, 600));
+      try {
+        result = await abrir();
+      } catch {
+        throw new Error('No se pudo abrir la galería. Cierra la app, vuelve a abrirla e inténtalo de nuevo.');
+      }
+    }
+  } finally {
+    galeriaAbierta = false;
+  }
+
+  if (result.canceled || result.assets.length === 0) {
+    return null;
+  }
+
+  const original = result.assets[0];
+
+  const png = formato === 'png';
+  // Solo se achica si es más grande que el máximo: agrandar una imagen chica
+  // no gana nitidez y solo la hace pesar más.
+  const acciones = original.width > anchoMaximo ? [{ resize: { width: anchoMaximo } }] : [];
+  const manipulated = await ImageManipulator.manipulateAsync(original.uri, acciones, {
+    compress: png ? 1 : JPEG_QUALITY,
+    format: png ? ImageManipulator.SaveFormat.PNG : ImageManipulator.SaveFormat.JPEG,
+    base64: true,
+  });
+
+  if (!manipulated.base64) {
+    throw new Error('No se pudo procesar la imagen.');
+  }
+
+  return { uri: manipulated.uri, base64: manipulated.base64, contentType: png ? 'image/png' : 'image/jpeg' };
+}
+
+/**
+ * Sube una imagen ya comprimida a un bucket, respetando la convención de
+ * carpetas que exigen las policies de Storage: {bucket}/{auth.uid()}/...
+ * (ver migración 0003). Devuelve la URL pública lista para guardar en la
+ * tabla correspondiente (logo_url / imagen_url).
+ */
+export async function uploadCompressedImage(
+  bucket: 'logos' | 'productos' | 'banners',
+  userId: string,
+  image: PickedImage,
+  fileNamePrefix: string,
+): Promise<string> {
+  const extension = image.contentType === 'image/png' ? 'png' : 'jpg';
+  const path = `${userId}/${fileNamePrefix}-${Date.now()}.${extension}`;
+
+  const { error } = await supabase.storage.from(bucket).upload(path, decode(image.base64), {
+    contentType: image.contentType,
+    upsert: true,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+  return data.publicUrl;
+}

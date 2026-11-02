@@ -1,0 +1,64 @@
+{
+  "expo": {
+    "name": "Kheep",
+    "slug": "kheep",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "kheep",
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#000000",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "blockedPermissions": ["android.permission.RECORD_AUDIO", "android.permission.SYSTEM_ALERT_WINDOW"],
+      "package": "com.kheep.app"
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#000000",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 180
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Kheep necesita acceso a tus fotos para que subas el logo de tu negocio y fotos de tus productos."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Kheep usa tu ubicación para mostrarte de una vez los comercios de tu comuna.",
+          "isAndroidBackgroundLocationEnabled": false
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          }
+        }
+      ],
+      "expo-video",
+      "./plugins/firmaAndroid"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

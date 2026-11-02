@@ -1,0 +1,219 @@
+import { useMemo, useState } from 'react';
+import { FlashList } from '@shopify/flash-list';
+import { KeyboardAvoidingView, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Text } from '@/components/ui/Texto';
+
+import { useTarjetaClara } from '@/components/ui/TarjetaClara';
+import { Colors, Fonts, Radius, Spacing } from '@/constants/theme';
+import type { Comuna } from '@/lib/catalog';
+import { normalizarTexto } from '@/lib/text';
+
+/**
+ * Selector de comuna para los formularios: un campo con línea inferior que
+ * abre un buscador con lista virtualizada. Con ~346 comunas, una lista sin
+ * buscador es imposible de usar y lenta de armar.
+ */
+export function ComunaFieldPicker({
+  label,
+  comunas,
+  selectedId,
+  onSelect,
+}: {
+  label: string;
+  comunas: Comuna[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busqueda, setBusqueda] = useState('');
+  // Sin texto de ayuda mientras se escribe: centrado, en Android empuja el
+  // cursor al borde derecho.
+  const [escribiendo, setEscribiendo] = useState(false);
+  const value = comunas.find((c) => c.id === selectedId)?.nombre ?? '';
+
+  const filtradas = useMemo(() => {
+    const termino = normalizarTexto(busqueda);
+    return termino ? comunas.filter((c) => normalizarTexto(c.nombre).includes(termino)) : comunas;
+  }, [comunas, busqueda]);
+
+  function handleClose() {
+    setOpen(false);
+    setBusqueda('');
+    // Al cerrarse con el teclado abierto, la ventana no avisa que se dejó de
+    // escribir: sin esto, al volver a abrirla ya no se veía "Buscar".
+    setEscribiendo(false);
+  }
+
+  // Sobre la tarjeta blanca (publicar) va como los campos de texto: una línea
+  // debajo, sin cápsula ni flecha.
+  const claro = useTarjetaClara();
+
+  return (
+    <View style={styles.container}>
+      <Pressable onPress={() => setOpen(true)} style={[styles.row, claro && styles.rowClaro]}>
+        <Text
+          style={[
+            value ? styles.value : styles.placeholder,
+            claro && (value ? styles.valueClaro : styles.placeholderClaro),
+          ]}>
+          {value || label}
+        </Text>
+        {!claro && <Text style={styles.chevron}>﹀</Text>}
+      </Pressable>
+
+      <Modal visible={open} transparent animationType="fade" onRequestClose={handleClose}>
+        {/* El panel se ancla abajo, justo donde aparece el teclado. Con
+            `padding` el contenedor se encoge al alto libre y, como el panel
+            mide un porcentaje de ese contenedor, queda completo sobre el
+            teclado en vez de quedar tapado. */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+          <Pressable style={styles.backdrop} onPress={handleClose}>
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.sheetTitle}>{label}</Text>
+
+            <TextInput
+              value={busqueda}
+              onChangeText={setBusqueda}
+              placeholder={escribiendo ? undefined : 'Buscar comuna…'}
+              onFocus={() => setEscribiendo(true)}
+              onBlur={() => setEscribiendo(false)}
+              placeholderTextColor={Colors.placeholder}
+              style={styles.buscador}
+              autoCorrect={false}
+              autoFocus
+            />
+
+            <FlashList
+              data={filtradas}
+              keyExtractor={(item) => item.id}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <Pressable
+                  onPress={() => {
+                    onSelect(item.id);
+                    handleClose();
+                  }}
+                  style={styles.option}>
+                  <Text style={[styles.optionLabel, item.id === selectedId && styles.optionLabelActive]}>
+                    {item.nombre}
+                  </Text>
+                  {item.id === selectedId && <Text style={styles.check}>✓</Text>}
+                </Pressable>
+              )}
+              ListEmptyComponent={<Text style={styles.sinResultados}>No encontramos esa comuna.</Text>}
+            />
+          </Pressable>
+          </Pressable>
+        </KeyboardAvoidingView>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    marginTop: Spacing.four,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+    borderRadius: 999,
+    paddingHorizontal: Spacing.four,
+    height: 62,
+  },
+  value: {
+    fontFamily: Fonts.light,
+    fontSize: 16,
+    color: Colors.text,
+  },
+  placeholder: {
+    fontFamily: Fonts.light,
+    fontSize: 16,
+    color: Colors.placeholder,
+  },
+  rowClaro: {
+    marginTop: -Spacing.two,
+    borderWidth: 0,
+    borderBottomWidth: 1,
+    borderColor: Colors.inputBorder,
+    borderRadius: 0,
+    paddingHorizontal: 0,
+    height: undefined,
+    // Mismo alto que un campo de texto sobre la tarjeta: el TextInput trae su
+    // propio relleno arriba y abajo, y un texto suelto no.
+    paddingTop: 10,
+    paddingBottom: 18,
+  },
+  valueClaro: {
+    fontSize: 18,
+    color: Colors.cardText,
+  },
+  placeholderClaro: {
+    fontSize: 18,
+    color: Colors.placeholder,
+  },
+  chevron: {
+    fontFamily: Fonts.light,
+    color: Colors.textMuted,
+  },
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: Colors.background,
+    borderTopLeftRadius: Radius.card,
+    borderTopRightRadius: Radius.card,
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.four,
+    height: '75%',
+  },
+  sheetTitle: {
+    fontFamily: Fonts.semiBold,
+    fontSize: 17,
+    color: Colors.text,
+    marginBottom: Spacing.three,
+  },
+  buscador: {
+    fontFamily: Fonts.light,
+    backgroundColor: '#F1F1F1',
+    borderRadius: 12,
+    paddingHorizontal: Spacing.three,
+    height: 44,
+    fontSize: 14,
+    color: Colors.text,
+    marginBottom: Spacing.two,
+  },
+  option: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: Spacing.three,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+  },
+  optionLabel: {
+    fontFamily: Fonts.light,
+    fontSize: 15,
+    color: Colors.text,
+  },
+  optionLabelActive: {
+    fontFamily: Fonts.semiBold,
+    color: Colors.accent,
+  },
+  check: {
+    fontFamily: Fonts.semiBold,
+    color: Colors.accent,
+  },
+  sinResultados: {
+    fontFamily: Fonts.light,
+    paddingVertical: Spacing.four,
+    textAlign: 'center',
+    color: Colors.textMuted,
+    fontSize: 13,
+  },
+});

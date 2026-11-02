@@ -1,0 +1,179 @@
+import type { Session } from '@supabase/supabase-js';
+import { createContext, PropsWithChildren, useCallback, useContext, useEffect, useState } from 'react';
+
+import { PermisosAdmin, fetchMisPermisosAdmin } from '@/lib/administradores';
+import { supabase } from '@/lib/supabase';
+
+export type Profile = {
+  id: string;
+  nombre: string;
+  telefono_contacto: string | null;
+  logo_url: string | null;
+  /** admin = administrador general; admin_zona = solo en sus comunas (0027). */
+  rol: 'comerciante' | 'admin' | 'admin_zona';
+  nivel: 1 | 2;
+  /** La comuna y la categoría (giro) del comercio (0050): ahí van sus publicaciones. */
+  comuna_id: string | null;
+  categoria_id: string | null;
+  /** Lo apaga un administrador (0033, 0057): sin él no publica ni cambia lo suyo. */
+  puede_editar: boolean;
+};
+
+/** Un comerciante al que un administrador le apagó "Editar": no publica ni edita. */
+export function sinPermisoDeEditar(profile: Profile | null): boolean {
+  return profile?.rol === 'comerciante' && profile.puede_editar === false;
+}
+
+export const AVISO_SIN_PERMISO = 'Tu cuenta no tiene permiso para publicar ni editar. Escríbele al administrador de Kheep.';
+
+type SessionContextValue = {
+  session: Session | null;
+  profile: Profile | null;
+  isLoading: boolean;
+  refreshProfile: () => Promise<void>;
+  /**
+   * Verdadero mientras alguien restablece su contraseña. Validar el código
+   * del correo YA inicia sesión, y sin esto el layout de acceso lo mandaría
+   * al inicio antes de que alcance a escribir la contraseña nueva.
+   */
+  recuperando: boolean;
+  setRecuperando: (valor: boolean) => void;
+  /**
+   * Qué puede hacer como administrador, general o de zona. null para quien
+   * no administra nada. Decide qué pantallas y botones se muestran; la base
+   * lo vuelve a comprobar en cada acción.
+   */
+  permisos: PermisosAdmin | null;
+};
+
+const SessionContext = createContext<SessionContextValue>({
+  session: null,
+  profile: null,
+  isLoading: true,
+  refreshProfile: async () => {},
+  recuperando: false,
+  setRecuperando: () => {},
+  permisos: null,
+});
+
+/**
+ * Única fuente de verdad de la sesión (y del perfil/rol asociado) para TODO
+ * el árbol de navegación. Se monta una sola vez en el layout raíz — si cada
+ * pantalla consultara su propia sesión de forma independiente, cada una
+ * arrancaría con session=null antes de resolver su propia promesa, y como
+ * expo-router desmonta/remonta layouts al redirigir entre grupos, eso
+ * produce un ping-pong infinito entre "/(auth)" y "/(app)" (visto en
+ * producción: 252 renders en 9 segundos). Con un solo Provider en la raíz,
+ * el valor es estable y consistente para toda la app.
+ *
+ * `profile` (rol/nivel) se carga aparte de `session`: es lo que decide qué
+ * ve cada quien (pestaña de admin, insignia de verificado, etc.) — nunca se
+ * asume desde el cliente, siempre se lee de `public.profiles`.
+ */
+async function leerPerfil(userId: string) {
+  const respuesta = await supabase
+    .from('profiles')
+    .select('id, nombre, telefono_contacto, logo_url, rol, nivel, comuna_id, categoria_id, puede_editar')
+    .eq('id', userId)
+    .maybeSingle();
+  // Sin la migración 0050 no existe `categoria_id`: se lee sin ella (la app
+  // sigue funcionando, solo sin la comuna y categoría del comercio).
+  if (respuesta.error?.code !== '42703') return respuesta;
+  const sinNegocio = await supabase
+    .from('profiles')
+    .select('id, nombre, telefono_contacto, logo_url, rol, nivel')
+    .eq('id', userId)
+    .maybeSingle();
+  return {
+    ...sinNegocio,
+    data: sinNegocio.data ? { ...sinNegocio.data, comuna_id: null, categoria_id: null, puede_editar: true } : null,
+  };
+}
+
+export function SessionProvider({ children }: PropsWithChildren) {
+  const [session, setSession] = useState<Session | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [recuperando, setRecuperando] = useState(false);
+  const [permisos, setPermisos] = useState<PermisosAdmin | null>(null);
+
+  const loadProfile = useCallback(async (userId: string | undefined) => {
+    if (!userId) {
+      setProfile(null);
+      setPermisos(null);
+      return;
+    }
+    // Se reintenta: un fallo de red justo al abrir la app dejaba la sesión
+    // sin perfil, y sin perfil un administrador se veía como una cuenta
+    // cualquiera y su pantalla de perfil quedaba en blanco.
+    let { data, error } = await leerPerfil(userId);
+    for (let intento = 0; error && intento < 3; intento++) {
+      await new Promise((listo) => setTimeout(listo, 1500));
+      ({ data, error } = await leerPerfil(userId));
+    }
+    const perfil = (data as Profile) ?? null;
+
+    // La consulta funcionó pero el perfil no existe: la cuenta se eliminó
+    // mientras la sesión seguía abierta en este teléfono. Sin esto la app
+    // quedaba con una sesión "fantasma" y pantallas en blanco. Solo se cierra
+    // si la respuesta fue clara; un fallo de red no debe sacar a nadie.
+    if (!error && !perfil) {
+      await supabase.auth.signOut();
+      setProfile(null);
+      setPermisos(null);
+      return;
+    }
+
+    // Una cuenta suspendida no puede iniciar sesión (lo rechaza Supabase),
+    // pero una sesión abierta de antes seguiría viva hasta que venza. Se
+    // cierra acá; al intentar entrar de nuevo verá el aviso de suspensión.
+    const suspendida = await supabase.rpc('cuenta_suspendida', { p_usuario: userId });
+    if (!suspendida.error && suspendida.data === true) {
+      await supabase.auth.signOut();
+      setProfile(null);
+      setPermisos(null);
+      return;
+    }
+
+    setProfile(perfil);
+
+    if (perfil?.rol === 'admin' || perfil?.rol === 'admin_zona') {
+      try {
+        setPermisos(await fetchMisPermisosAdmin());
+      } catch {
+        // Sin la migración 0027 la función no existe: el general sigue siendo
+        // general, que es lo que era antes de los administradores de zona.
+        setPermisos(perfil.rol === 'admin' ? { esGeneral: true, permisos: [], comunas: [] } : null);
+      }
+    } else {
+      setPermisos(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(async ({ data }) => {
+      setSession(data.session);
+      await loadProfile(data.session?.user.id);
+      setIsLoading(false);
+    });
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      loadProfile(newSession?.user.id);
+    });
+
+    return () => subscription.subscription.unsubscribe();
+  }, [loadProfile]);
+
+  const refreshProfile = useCallback(() => loadProfile(session?.user.id), [loadProfile, session]);
+
+  return (
+    <SessionContext.Provider value={{ session, profile, isLoading, refreshProfile, recuperando, setRecuperando, permisos }}>
+      {children}
+    </SessionContext.Provider>
+  );
+}
+
+export function useSession() {
+  return useContext(SessionContext);
+}

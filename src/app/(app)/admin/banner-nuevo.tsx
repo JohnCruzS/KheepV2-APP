@@ -1,0 +1,365 @@
+import { Stack, useRouter } from 'expo-router';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { SelectorZonas } from '@/components/admin/SelectorZonas';
+import { BotonPie } from '@/components/ui/BotonPie';
+import { EncabezadoMarca } from '@/components/ui/EncabezadoMarca';
+import { AjusteAPantalla } from '@/components/ui/AjusteAPantalla';
+import { Text } from '@/components/ui/Texto';
+import { Colors, Fonts, Spacing } from '@/constants/theme';
+import { ComunaAdmin, crearBanners, fetchComunasAdmin } from '@/lib/catalog';
+import { getErrorMessage } from '@/lib/errors';
+import { LIMITES_MEDIO, MedioElegido, elegirMedioBanner, subirMedioBanner } from '@/lib/medios';
+import { MedioBanner } from '@/components/catalog/MedioBanner';
+import { REJILLA, u } from '@/lib/rejilla';
+import { supabase, usuarioActual } from '@/lib/supabase';
+import { useSession } from '@/providers/SessionProvider';
+
+const DIAS_MAX = 365;
+const HORAS_MAX = 8760;
+
+/**
+ * Publicar un banner desde el panel del admin ("Nuevo"):
+ *
+ *  - Arriba, "Subir": la foto queda ahí mismo como vista previa, con el alto
+ *    con que se verá en el inicio.
+ *  - Enlace: a dónde lleva tocarlo (opcional).
+ *  - Ubicación: abre la lista de regiones y comunas para elegir dónde sale.
+ *  - Días (- 3 +): tocar "Días" cambia a "Horas" y al revés.
+ *  - General / Principal (se toca para cambiar): Principal sale primero en el
+ *    carrusel una sola vez por teléfono, la primera vez que se abre la app;
+ *    después queda en el orden normal (0042).
+ *  - Publicar, al final.
+ *
+ * El banner del admin no pasa por revisión ni pago: sale al tiro.
+ */
+export default function BannerNuevoScreen() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { profile, permisos } = useSession();
+  const esGeneral = profile?.rol === 'admin';
+
+  // Todas, visibles o no: en Ubicación, dos toques en el logo dejan solo las visibles.
+  const [comunas, setComunas] = useState<ComunaAdmin[]>([]);
+  const [imagen, setImagen] = useState<MedioElegido | null>(null);
+  /** El ancho del recuadro "Subir", que es el de cada una de sus páginas. */
+  const [anchoFoto, setAnchoFoto] = useState(0);
+  const [enlace, setEnlace] = useState('');
+  const [elegidas, setElegidas] = useState<string[]>([]);
+  const [eligiendo, setEligiendo] = useState(false);
+  const [enHoras, setEnHoras] = useState(false);
+  const [cantidad, setCantidad] = useState(3);
+  const [principal, setPrincipal] = useState(false);
+  const [publicando, setPublicando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Solo lo que esta cuenta puede elegir: el de zona, sus comunas. Parte con
+  // todo lo suyo encendido (el general, el país entero) y se apaga lo que no va.
+  const disponibles = useMemo(
+    () => (esGeneral ? comunas : comunas.filter((c) => permisos?.comunas.includes(c.id))),
+    [comunas, esGeneral, permisos],
+  );
+  useEffect(() => {
+    fetchComunasAdmin()
+      .then(setComunas)
+      .catch(() => setComunas([]));
+  }, []);
+  useEffect(() => {
+    setElegidas(disponibles.map((c) => c.id));
+  }, [disponibles]);
+
+  // El general con todo encendido publica UN banner para todas las comunas
+  // (también las que se activen después), no uno por cada una.
+  const todoElPais = esGeneral && disponibles.length > 0 && elegidas.length === disponibles.length;
+  const maximo = enHoras ? HORAS_MAX : DIAS_MAX;
+
+  async function elegirFoto(modo: 'imagen' | 'animado') {
+    try {
+      // Foto (con recorte) o GIF/video (0044, con límites de peso y duración).
+      const medio = await elegirMedioBanner(modo);
+      if (medio) {
+        setImagen(medio);
+        setError(null);
+      }
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo abrir la galería.'));
+    }
+  }
+
+  function cambiarUnidad() {
+    // Al pasar de días a horas se conserva la duración (3 días = 72 horas), y al revés.
+    setCantidad((c) => (enHoras ? Math.max(1, Math.min(DIAS_MAX, Math.round(c / 24))) : Math.min(HORAS_MAX, c * 24)));
+    setEnHoras((h) => !h);
+  }
+
+  async function publicar() {
+    setError(null);
+    if (!imagen) {
+      setError('Sube la foto, el GIF o el video del banner.');
+      return;
+    }
+    if (elegidas.length === 0) {
+      setError('Elige en Ubicación al menos una comuna.');
+      return;
+    }
+    const enlaceLimpio = enlace.trim();
+    if (enlaceLimpio && !/^https?:\/\/\S+$/i.test(enlaceLimpio) && !/^[\w-]+(\.[\w-]+)+\S*$/.test(enlaceLimpio)) {
+      setError('El enlace no es válido (por ejemplo: www.kheep.cl).');
+      return;
+    }
+    const url = enlaceLimpio && !/^https?:\/\//i.test(enlaceLimpio) ? `https://${enlaceLimpio}` : enlaceLimpio;
+
+    setPublicando(true);
+    try {
+      const { data: auth } = await usuarioActual();
+      const imagenUrl = await subirMedioBanner(auth.user!.id, imagen);
+      await crearBanners({
+        imagenUrl,
+        comunaIds: todoElPais ? [null] : elegidas,
+        // La base guarda también los días (de 1 a 365); con horas, los que cubren.
+        dias: enHoras ? Math.max(1, Math.min(DIAS_MAX, Math.ceil(cantidad / 24))) : cantidad,
+        horas: enHoras ? cantidad : null,
+        enlace: url || null,
+        pagado: true,
+        prioritario: esGeneral,
+        principal,
+      });
+      router.back();
+    } catch (err) {
+      setError(getErrorMessage(err, 'No se pudo publicar el banner.'));
+    } finally {
+      setPublicando(false);
+    }
+  }
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <EncabezadoMarca subtitulo="Nuevo" />
+
+      {/* Sin deslizar: en una pantalla baja se achica para que quepa todo. */}
+      <AjusteAPantalla style={[styles.contenido, { paddingBottom: Spacing.three }]}>
+        {/* El recuadro "Subir", al alto con que se verá en el inicio. Se
+            desliza entre dos páginas: la primera para
+            una imagen, con recorte; la segunda para un GIF o un video. La
+            elegida se ve en su página tal como quedará. */}
+        <View style={styles.foto} onLayout={(e) => setAnchoFoto(e.nativeEvent.layout.width)}>
+          <ScrollView
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            style={StyleSheet.absoluteFill}>
+            {(['imagen', 'animado'] as const).map((modo) => {
+              const suya = imagen && (modo === 'imagen') === (imagen.tipo === 'imagen') ? imagen : null;
+              return (
+                <Pressable
+                  key={modo}
+                  onPress={() => elegirFoto(modo)}
+                  style={[styles.pagina, { width: anchoFoto }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={modo === 'imagen' ? 'Subir imagen' : 'Subir GIF o video'}>
+                  {suya ? (
+                    // Vista previa tal como se verá (el video, sin sonido y en bucle).
+                    <MedioBanner uri={suya.uri} tipo={suya.tipo} ancho={400} style={StyleSheet.absoluteFill} />
+                  ) : modo === 'imagen' ? (
+                    <>
+                      <Text style={styles.subir}>Imagen</Text>
+                      <Text style={styles.limites}>Una foto: eliges qué parte se ve en el banner</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.subir}>GIF o video</Text>
+                      <Text style={styles.limites}>
+                        {`GIF (hasta ${LIMITES_MEDIO.gifBytes / 1024 / 1024} MB) o video (hasta ${LIMITES_MEDIO.videoSegundos} s y ${LIMITES_MEDIO.videoBytes / 1024 / 1024} MB, sin sonido)`}
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+
+        <TextInput
+          value={enlace}
+          onChangeText={setEnlace}
+          placeholder="Enlace"
+          placeholderTextColor={Colors.text}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          style={styles.enlace}
+        />
+
+        <Pressable
+          style={({ pressed }) => [styles.ubicacion, pressed && styles.presionado]}
+          onPress={() => setEligiendo(true)}
+          accessibilityRole="button">
+          <Text style={styles.ubicacionLabel}>Ubicación</Text>
+        </Pressable>
+
+        {/* Tocar la palabra cambia entre días y horas. */}
+        <Pressable onPress={cambiarUnidad} hitSlop={8} accessibilityRole="button">
+          <Text style={styles.unidad}>{enHoras ? 'Horas' : 'Días'}</Text>
+        </Pressable>
+        <View style={styles.paso}>
+          <Pressable onPress={() => setCantidad((c) => Math.max(1, c - 1))} hitSlop={12} accessibilityLabel="Menos">
+            <Text style={styles.pasoSigno}>-</Text>
+          </Pressable>
+          <Text style={styles.pasoValor}>{cantidad}</Text>
+          <Pressable onPress={() => setCantidad((c) => Math.min(maximo, c + 1))} hitSlop={12} accessibilityLabel="Más">
+            <Text style={styles.pasoSigno}>+</Text>
+          </Pressable>
+        </View>
+
+        {/* Tipo de banner: se toca para cambiar. */}
+        <Pressable onPress={() => setPrincipal((p) => !p)} hitSlop={8} accessibilityRole="button">
+          <Text style={[styles.tipo, principal && styles.tipoPrincipal]}>{principal ? 'Principal' : 'General'}</Text>
+        </Pressable>
+
+      </AjusteAPantalla>
+
+      {/* Abajo y a la misma altura que en las demás vistas. */}
+      <BotonPie label="Publicar" onPress={publicar} cargando={publicando} aviso={error} />
+
+      <SelectorZonas
+        visible={eligiendo}
+        comunas={disponibles}
+        elegidas={elegidas}
+        onClose={() => setEligiendo(false)}
+        onListo={(ids) => {
+          setElegidas(ids);
+          setEligiendo(false);
+        }}
+      />
+    </SafeAreaView>
+  );
+}
+
+const margen = u(REJILLA.margenLateral);
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  contenido: {
+    paddingHorizontal: margen,
+    paddingTop: Spacing.three,
+  },
+  foto: {
+    height: u(REJILLA.bannerAlto),
+    borderRadius: u(REJILLA.curvatura),
+    overflow: 'hidden',
+    backgroundColor: '#3C3C3C',
+  },
+  pagina: {
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.three,
+  },
+
+  subir: {
+    fontFamily: Fonts.medium,
+    fontSize: 24,
+    color: '#000000',
+  },
+  limites: {
+    fontFamily: Fonts.delgada,
+    fontSize: 13,
+    color: '#1A1A1A',
+    textAlign: 'center',
+    marginTop: Spacing.two,
+    paddingHorizontal: Spacing.four,
+  },
+  enlace: {
+    fontFamily: Fonts.delgada,
+    fontSize: 22,
+    color: Colors.text,
+    marginTop: Spacing.four,
+    paddingHorizontal: margen * 2,
+    paddingVertical: Spacing.three,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.surfaceBorder,
+  },
+  ubicacion: {
+    marginHorizontal: margen * 0.5,
+    marginTop: Spacing.four,
+    paddingVertical: Spacing.three,
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+  },
+  presionado: {
+    opacity: 0.7,
+  },
+  ubicacionLabel: {
+    fontFamily: Fonts.medium,
+    fontSize: 22,
+    color: '#000000',
+  },
+  unidad: {
+    fontFamily: Fonts.delgada,
+    fontSize: 22,
+    color: Colors.text,
+    textAlign: 'center',
+    marginTop: Spacing.four,
+  },
+  paso: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: margen * 0.5,
+    marginTop: Spacing.three,
+    paddingHorizontal: Spacing.five,
+    paddingVertical: Spacing.three,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+  },
+  pasoSigno: {
+    fontFamily: Fonts.medium,
+    fontSize: 28,
+    color: Colors.text,
+  },
+  pasoValor: {
+    fontFamily: Fonts.medium,
+    fontSize: 26,
+    color: Colors.text,
+  },
+  tipo: {
+    fontFamily: Fonts.delgada,
+    fontSize: 24,
+    color: Colors.text,
+    textAlign: 'center',
+    marginTop: Spacing.five,
+  },
+  tipoPrincipal: {
+    color: Colors.accent,
+  },
+  error: {
+    fontFamily: Fonts.light,
+    fontSize: 14,
+    color: Colors.danger,
+    textAlign: 'center',
+    marginTop: Spacing.three,
+  },
+  publicar: {
+    marginTop: Spacing.five,
+    paddingVertical: Spacing.four,
+    borderRadius: u(REJILLA.curvatura),
+    backgroundColor: Colors.accent,
+    alignItems: 'center',
+  },
+  publicarPresionado: {
+    backgroundColor: Colors.accentPressed,
+  },
+  publicarLabel: {
+    fontFamily: Fonts.medium,
+    fontSize: 21,
+    color: '#FFFFFF',
+  },
+});

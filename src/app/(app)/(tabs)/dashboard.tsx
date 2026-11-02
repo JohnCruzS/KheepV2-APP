@@ -1,0 +1,729 @@
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FlashList } from '@shopify/flash-list';
+import { ActivityIndicator, Dimensions, Pressable, StyleSheet, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { BannerCarousel } from '@/components/catalog/BannerCarousel';
+import { EmptyState, ErrorState, LoadingState } from '@/components/catalog/CatalogState';
+import { CategoryChips } from '@/components/catalog/CategoryChips';
+import { ImageViewer } from '@/components/catalog/ImageViewer';
+import { ComunaPicker } from '@/components/catalog/ComunaPicker';
+import { PublicacionCard } from '@/components/catalog/PublicacionCard';
+import { TituloPosicionado } from '@/components/ui/BrandLogo';
+import { PERIMETRO_ALTO, invalidarMarca, useMarca } from '@/lib/marca';
+import { Colors, Layout, Spacing } from '@/constants/theme';
+import {
+  Banner,
+  Categoria,
+  Comuna,
+  PublicacionResumen,
+  fetchBanners,
+  fetchCategorias,
+  fetchCategoriasConContenido,
+  fetchComuna,
+  fetchCategoriaOtro,
+  fetchComunas,
+  FilaIndiceCatalogo,
+  fetchIndiceCatalogo,
+  fetchPublicacionesPorIds,
+  registrarEvento,
+} from '@/lib/catalog';
+import { getErrorMessage } from '@/lib/errors';
+import { ordenarCatalogo } from '@/lib/ordenCatalogo';
+import { leerUsoCategorias, ordenarPorUso, registrarUsoCategoria } from '@/lib/preferencias';
+import { useSession } from '@/providers/SessionProvider';
+import { useUbicacion } from '@/providers/UbicacionProvider';
+import { contactarPorWhatsApp } from '@/lib/whatsapp';
+
+/**
+ * Cuánto se mete la primera tarjeta dentro de la zona negra: en la plantilla
+ * el negro no termina donde empieza la tarjeta, sino ~41dp más abajo, así la
+ * tarjeta queda "montada" sobre el cambio de fondo negro a gris.
+ */
+const SOLAPE_TARJETA = 41;
+
+/**
+ * De a cuántos comercios se traen los datos completos (productos y fotos) a
+ * medida que se baja por la lista. Una tarjeta ocupa más de media pantalla:
+ * 8 cubren de sobra lo que se ve al entrar y un poco más.
+ */
+const PAGINA = 8;
+/** Espacio entre la fila de categorías y el borde superior de la tarjeta. */
+const ESPACIO_CATEGORIAS_TARJETA = 0;
+
+export default function DashboardScreen() {
+  const router = useRouter();
+  const { session } = useSession();
+  const insets = useSafeAreaInsets();
+  // El título se coloca dentro de un perímetro con tres medidas que fija el
+  // admin (Panel Admin / Título de la app): centro horizontal, ancho y centro
+  // vertical. Ver src/lib/marca.ts.
+  //
+  // El perímetro va del borde FÍSICO de arriba —como se mide en
+  // el diseño— hasta donde empieza el banner: 340 de 1000 del alto. Su
+  // ancho es el del banner, para que el título se alinee con él.
+  const { url: urlTitulo, centroX, ancho: anchoTitulo, alto: altoTitulo, centroY } = useMarca();
+  // Una unidad de la rejilla = el ancho de la pantalla entre 1000.
+  // Las medidas verticales usan la misma unidad que las horizontales, que es
+  // lo que mantiene el bloque proporcionado en cualquier teléfono.
+  const unidad = Dimensions.get('window').width / 1000;
+  const altoPerimetro = Math.round(PERIMETRO_ALTO * unidad);
+
+  // Datos "de vitrina": banners, categorías y comunas casi no cambian
+  // sesión a sesión — se piden UNA vez al entrar, nunca de nuevo solo
+  // porque el usuario escribió una letra o tocó una categoría. Antes todo
+  // esto vivía en el mismo `load()` que las publicaciones y se volvía a
+  // pedir en cada filtro — se sentía con tirones y gastaba consultas de
+  // más contra Supabase.
+  const [banners, setBanners] = useState<Banner[]>([]);
+  const [categorias, setCategorias] = useState<Categoria[]>([]);
+  const [comunas, setComunas] = useState<Comuna[]>([]);
+
+  /**
+   * El índice del catálogo de la comuna: id, categoría y destacado de todas
+   * sus publicaciones (ver fetchIndiceCatalogo). Con esto se ordena, se
+   * filtra por categoría y se sabe qué hay, sin bajar productos ni fotos.
+   */
+  const [indice, setIndice] = useState<FilaIndiceCatalogo[]>([]);
+  /** Los datos completos que ya llegaron, por id: se piden de a PAGINA. */
+  const [detalles, setDetalles] = useState<Record<string, PublicacionResumen>>({});
+  const detallesRef = useRef(detalles);
+  useEffect(() => {
+    detallesRef.current = detalles;
+  }, [detalles]);
+  /** Ids pedidos y todavía sin respuesta: para no pedir dos veces lo mismo. */
+  const pedidos = useRef(new Set<string>());
+  /** Ids que la base ya no devolvió (se eliminaron o dejaron de estar aprobados entre medio). */
+  const ausentes = useRef(new Set<string>());
+  /** Cuántos de la categoría elegida se muestran: crece al llegar al final de la lista. */
+  const [cuantas, setCuantas] = useState(PAGINA);
+  const [cargandoMas, setCargandoMas] = useState(false);
+  const [errorPagina, setErrorPagina] = useState(false);
+  /** Nombre de la comuna actual: llega solo, antes que la lista completa. */
+  const [nombreComuna, setNombreComuna] = useState<string | null>(null);
+  /**
+   * De qué comuna son los comercios que hay cargados. Sirve para saber si lo
+   * que se está mostrando corresponde a la comuna elegida o todavía es lo de
+   * la anterior. `undefined` = aún no llegó nada.
+   */
+  const [comunaCargada, setComunaCargada] = useState<string | null | undefined>(undefined);
+  const [categoriaId, setCategoriaId] = useState<string | null>(null);
+  // La comuna no es estado de esta pantalla: se resolvió antes de entrar (en
+  // la bienvenida) y queda guardada en el teléfono, así que al volver a abrir
+  // la app el catálogo ya arranca en la comuna del usuario.
+  const { comunaId, elegirComuna, avisarCatalogoListo, catalogoListo } = useUbicacion();
+
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /** Foto que se está viendo completa desde una tarjeta, si hay alguna. */
+  const [fotoAbierta, setFotoAbierta] = useState<string | null>(null);
+
+  // Banners: se vuelven a pedir cada vez que se regresa a Inicio. La
+  // pestaña queda montada todo el tiempo, y mientras tanto el admin puede
+  // eliminar un banner (o un comerciante activar uno nuevo): si se pidieran
+  // una sola vez, el carrusel seguiría mostrando los viejos hasta cerrar la
+  // app. Es una sola consulta liviana.
+  const recargarBanners = useCallback(() => {
+    // De paso se vuelve a preguntar por el título: así el logo especial que
+    // programó el admin (y el tamaño que le puso) llega al resto de los
+    // usuarios sin que tengan que cerrar y abrir la app, y el que vence hoy
+    // desaparece solo.
+    invalidarMarca();
+    fetchBanners(comunaId)
+      .then(setBanners)
+      .catch(() => {
+        // Si falla, se queda con los que ya tenía: no vale la pena un error visible.
+      });
+    // Depende de la comuna: los banners de una comuna solo salen en la suya.
+  }, [comunaId]);
+  useFocusEffect(recargarBanners);
+
+  // Categorías: igual que los banners, se vuelven a pedir cada vez que se
+  // regresa a Inicio. La pestaña queda montada todo el tiempo y mientras
+  // tanto el admin puede crear o eliminar una categoría; si se pidieran una
+  // sola vez, la eliminada seguiría apareciendo en el catálogo hasta cerrar
+  // la app. El orden que ya se está mostrando se conserva —reordenar en vivo
+  // movería un chip justo debajo del dedo—: las nuevas entran al final y las
+  // eliminadas simplemente desaparecen.
+  const ordenMostrado = useRef<string[] | null>(null);
+  /** Mientras el usuario no toque ninguna, manda la selección automática. */
+  const sinElegir = useRef(true);
+  const recargarCategorias = useCallback(() => {
+    // Sin cuenta, las categorías sin ningún comercio no se muestran: solo
+    // llevan a un catálogo vacío. Con cuenta se ven todas — el comerciante
+    // necesita saber dónde puede publicar y el admin, qué hay montado.
+    Promise.all([
+      fetchCategorias(comunaId),
+      leerUsoCategorias(),
+      fetchCategoriasConContenido(comunaId),
+      fetchCategoriaOtro().catch(() => null),
+    ])
+      .then(([todas, uso, conContenido, otro]) => {
+        setCategoriaOtro(otro);
+        const conComercios = todas.filter((c) => conContenido.has(c.id));
+        const categoriasData = session ? todas : conComercios;
+        setComunaVacia(conComercios.length === 0);
+        const previo = ordenMostrado.current;
+        // "Otro" es la categoría por descarte: va SIEMPRE al final de la fila
+        // y nunca cuenta entre las más usadas.
+        const esOtro = (c: Categoria) => c.id === otro?.id;
+        const sinOtro = categoriasData.filter((c) => !esOtro(c));
+        const ordenadasSinOtro = previo
+          ? [
+              ...previo
+                .map((id) => sinOtro.find((c) => c.id === id))
+                .filter((c): c is Categoria => c !== undefined),
+              ...sinOtro.filter((c) => !previo.includes(c.id)),
+            ]
+          : // Primera carga: orden del admin + las más usadas por este usuario.
+            ordenarPorUso(sinOtro, uso);
+        const ordenadas = [...ordenadasSinOtro, ...categoriasData.filter(esOtro)];
+        ordenMostrado.current = ordenadas.map((c) => c.id);
+        setCategoriasVisibles(todas.map((c) => c.id));
+        setCategorias(ordenadas);
+        // Al abrir, la app entra directamente en la primera categoría
+        // (documento EDIT APP). Si el filtro activo era una categoría que ya
+        // no está, se vuelve a la primera en vez de quedar en un catálogo
+        // vacío para siempre.
+        setCategoriasListas(true);
+        setCategoriaId((actual) => {
+          if (actual && ordenadas.some((c) => c.id === actual)) return actual;
+          if (sinElegir.current && ordenadas.length > 0) {
+            sinElegir.current = false;
+            return ordenadas[0].id;
+          }
+          return actual && !ordenadas.some((c) => c.id === actual) ? (ordenadas[0]?.id ?? null) : actual;
+        });
+      })
+      .catch(() => {
+        // Se queda con las que ya tenía; un catálogo sin chips no es un error
+        // que valga la pena mostrarle al usuario.
+        setCategoriasListas(true);
+      });
+    // `session`: al entrar o salir de la cuenta cambia qué categorías se ven.
+  }, [comunaId, session]);
+  useFocusEffect(recargarCategorias);
+
+  // Cada comuna puede tener su propia lista de categorías (el admin la arma
+  // comuna por comuna), así que al cambiar de comuna hay que pedirla de
+  // nuevo. El orden mostrado se descarta: es el de la lista anterior y
+  // conservarlo dejaría arriba categorías que esta comuna ni siquiera tiene.
+  const primeraCarga = useRef(true);
+  useEffect(() => {
+    if (primeraCarga.current) {
+      primeraCarga.current = false;
+      return;
+    }
+    ordenMostrado.current = null;
+    sinElegir.current = true;
+    setCategoriasVisibles(null);
+    setCategorias([]);
+    setCategoriaId(null);
+    setCategoriasListas(false);
+    recargarCategorias();
+    recargarBanners();
+  }, [comunaId, recargarCategorias, recargarBanners]);
+
+  // El encabezado solo necesita el NOMBRE de la comuna: una fila. La lista
+  // completa (las ~350 del selector) se pide después y no retrasa el arranque.
+  useEffect(() => {
+    if (!comunaId) {
+      setNombreComuna(null);
+      return;
+    }
+    let vivo = true;
+    fetchComuna(comunaId)
+      .then((comuna) => {
+        if (vivo) setNombreComuna(comuna?.nombre ?? null);
+      })
+      .catch(() => {
+        // Sin nombre se sigue igual: el catálogo es lo que importa.
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [comunaId]);
+
+  // La lista completa, en segundo plano: es para cuando se abra el selector.
+  //
+  // Se vuelve a pedir cada vez que se regresa a Inicio, igual que los banners
+  // y las categorías: el administrador puede mostrar, ocultar o eliminar una
+  // comuna mientras la pestaña sigue montada, y antes esos cambios no se veían
+  // hasta cerrar y volver a abrir la app.
+  const recargarComunas = useCallback(() => {
+    fetchComunas()
+      .then(setComunas)
+      .catch(() => {
+        // El selector se queda con las que ya tenía; no es motivo para tapar
+        // el catálogo con un error.
+      });
+  }, []);
+  useFocusEffect(recargarComunas);
+
+  // Publicaciones: se cargan de nuevo cada vez (y solo) que cambia un
+  // filtro real — categoría, comuna o la búsqueda ya "asentada".
+  // Ids de las categorías que esta comuna muestra. Filtran el catálogo, así
+  // que es estado y no una ref: cuando llegan, las publicaciones se vuelven a
+  // pedir ya filtradas. `null` = todavía no se sabe.
+  const [categoriasVisibles, setCategoriasVisibles] = useState<string[] | null>(null);
+  /** Ninguna categoría de esta comuna tiene comercios todavía. */
+  const [comunaVacia, setComunaVacia] = useState(false);
+  /** "Otro": ahí van las publicaciones que no tienen una categoría visible. */
+  const [categoriaOtro, setCategoriaOtro] = useState<Categoria | null>(null);
+  /** Ya se resolvió la fila de categorías, aunque haya quedado vacía. */
+  const [categoriasListas, setCategoriasListas] = useState(false);
+
+  // Se pide el índice de TODO el catálogo de la comuna de una vez, sin esperar
+  // a saber qué categorías tiene: así viaja en paralelo con la consulta de las
+  // categorías en vez de ir detrás. Es liviano (tres columnas), y con él
+  // cambiar de categoría no pide nada a la red. Los productos y las fotos se
+  // traen después, de a poco (ver más abajo).
+  const loadPublicaciones = useCallback(
+    async ({ isRefresh = false }: { isRefresh?: boolean } = {}) => {
+      isRefresh ? setRefreshing(true) : setLoading(true);
+      setError(null);
+      try {
+        const nuevo = await fetchIndiceCatalogo(comunaId);
+        // Lo que ya estaba en memoria y sigue publicado se refresca (pudo
+        // editarse mientras tanto); lo demás se olvida.
+        const vigentes = new Set(nuevo.map((f) => f.id));
+        const enMemoria = Object.keys(detallesRef.current).filter((id) => vigentes.has(id));
+        const frescos = enMemoria.length > 0 ? await fetchPublicacionesPorIds(enMemoria) : [];
+        ausentes.current.clear();
+        setErrorPagina(false);
+        setDetalles(Object.fromEntries(frescos.map((pub) => [pub.id, pub])));
+        setIndice(nuevo);
+        setComunaCargada(comunaId);
+      } catch (err) {
+        setComunaCargada(comunaId);
+        setError(getErrorMessage(err, 'Error desconocido.'));
+      } finally {
+        isRefresh ? setRefreshing(false) : setLoading(false);
+      }
+    },
+    [comunaId],
+  );
+
+  useEffect(() => {
+    loadPublicaciones();
+  }, [loadPublicaciones]);
+
+  // Sin "Todas", una publicación sin categoría o de una
+  // categoría que esta comuna no muestra no tendría dónde aparecer: se
+  // muestra en "Otro", como si fuera suya.
+  const esHuerfana = useCallback(
+    (p: FilaIndiceCatalogo) => !!categoriasVisibles && (!p.categoria_id || !categoriasVisibles.includes(p.categoria_id)),
+    [categoriasVisibles],
+  );
+  const hayHuerfanas = useMemo(() => indice.some(esHuerfana), [indice, esHuerfana]);
+
+  // La fila de categorías. "Otro" es la categoría por descarte: solo existe
+  // en la comuna cuando tiene negocios —propios o sin una categoría visible—,
+  // también para quien entra con cuenta. Si los tiene y
+  // la comuna no la muestra, se suma al final para que se puedan encontrar.
+  const otroConNegocios = useMemo(
+    () => !!categoriaOtro && indice.some((p) => p.categoria_id === categoriaOtro.id || esHuerfana(p)),
+    [indice, categoriaOtro, esHuerfana],
+  );
+  const chips = useMemo(() => {
+    if (!categoriaOtro) return categorias;
+    const sinOtro = categorias.filter((c) => c.id !== categoriaOtro.id);
+    return otroConNegocios ? [...sinOtro, categoriaOtro] : sinOtro;
+  }, [categorias, categoriaOtro, otroConNegocios]);
+
+  // Siempre hay una categoría elegida: si todavía no hay ninguna (o la que
+  // estaba ya no existe), la primera de la fila.
+  useEffect(() => {
+    if (chips.length === 0) return;
+    if (!categoriaId || !chips.some((c) => c.id === categoriaId)) setCategoriaId(chips[0].id);
+  }, [chips, categoriaId]);
+
+  // Lo que se muestra: lo de la categoría elegida, al azar (ver
+  // ordenCatalogo.ts). El orden se recalcula solo cuando cambia algo de
+  // verdad, no en cada dibujado, para que las tarjetas no salten solas.
+  const ordenados = useMemo(() => {
+    if (!categoriaId) return [];
+    const esOtro = categoriaOtro?.id === categoriaId;
+    const visibles = indice.filter((p) => p.categoria_id === categoriaId || (esOtro && esHuerfana(p)));
+    return ordenarCatalogo(visibles, categoriasVisibles ?? [], categoriaId);
+  }, [indice, categoriaId, categoriasVisibles, categoriaOtro, esHuerfana]);
+
+  // Una tarjeta por cuenta: todo lo que una cuenta tiene
+  // en línea va junto, en el orden que le dio en su lista (y si no le dio
+  // uno, de la más nueva a la más vieja). El orden entre cuentas sigue siendo
+  // al azar, el de `ordenados`.
+  const grupos = useMemo(() => {
+    const porCuenta = new Map<string, FilaIndiceCatalogo[]>();
+    for (const fila of ordenados) {
+      const cuenta = fila.usuario_id ?? fila.id;
+      const grupo = porCuenta.get(cuenta);
+      if (grupo) grupo.push(fila);
+      else porCuenta.set(cuenta, [fila]);
+    }
+    return [...porCuenta.values()].map((grupo) =>
+      [...grupo].sort(
+        (a, b) =>
+          (a.orden_propio ?? -1) - (b.orden_propio ?? -1) || (b.created_at ?? '').localeCompare(a.created_at ?? ''),
+      ),
+    );
+  }, [ordenados]);
+
+  // Otra categoría, otra comuna o una recarga: se vuelve a la primera tanda.
+  useEffect(() => {
+    setCuantas(PAGINA);
+  }, [ordenados]);
+
+  // Trae los datos completos de los que se van a mostrar y todavía no están.
+  useEffect(() => {
+    const faltan = grupos
+      .slice(0, cuantas)
+      .flat()
+      .map((f) => f.id)
+      .filter((id) => !detalles[id] && !pedidos.current.has(id) && !ausentes.current.has(id));
+    if (faltan.length === 0) return;
+    faltan.forEach((id) => pedidos.current.add(id));
+    setCargandoMas(true);
+    fetchPublicacionesPorIds(faltan)
+      .then((lista) => {
+        const llegaron = new Set(lista.map((pub) => pub.id));
+        faltan.filter((id) => !llegaron.has(id)).forEach((id) => ausentes.current.add(id));
+        setErrorPagina(false);
+        setDetalles((d) => ({ ...d, ...Object.fromEntries(lista.map((pub) => [pub.id, pub])) }));
+      })
+      .catch(() => setErrorPagina(true))
+      .finally(() => {
+        faltan.forEach((id) => pedidos.current.delete(id));
+        setCargandoMas(false);
+      });
+  }, [grupos, cuantas, detalles]);
+
+  // Lo que se muestra: una tarjeta por cuenta, con los productos de todas sus
+  // publicaciones seguidos (la galería se pasa deslizando). Si una del medio
+  // todavía no llegó, la lista se corta ahí hasta que llegue: así las
+  // tarjetas nunca cambian de lugar debajo del dedo.
+  const publicaciones = useMemo(() => {
+    const lista: PublicacionResumen[] = [];
+    for (const grupo of grupos.slice(0, cuantas)) {
+      const presentes = grupo.filter((f) => !ausentes.current.has(f.id));
+      if (presentes.length === 0) continue;
+      if (presentes.some((f) => !detalles[f.id])) break;
+      const pubs = presentes.map((f) => detalles[f.id]);
+      lista.push({
+        ...pubs[0],
+        productos: pubs
+          .flatMap((pub) => [...pub.productos].sort((a, b) => a.orden - b.orden))
+          .map((producto, orden) => ({ ...producto, orden })),
+      });
+    }
+    return lista;
+  }, [grupos, cuantas, detalles]);
+
+  /** La primera tanda de la categoría elegida todavía no llegó entera. */
+  const faltaPrimera =
+    !errorPagina &&
+    grupos
+      .slice(0, PAGINA)
+      .flat()
+      .some((f) => !detalles[f.id] && !ausentes.current.has(f.id));
+
+  const cargarMas = useCallback(() => {
+    setCuantas((c) => (c < grupos.length ? c + PAGINA : c));
+  }, [grupos.length]);
+
+  // Al volver a Inicio se vuelven a pedir: mientras la pestaña estaba
+  // montada pudo aparecer una publicación nueva (recién aprobada, por
+  // ejemplo) y antes no se veía hasta cambiar de filtro o de comuna.
+  const primerFoco = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      if (primerFoco.current) {
+        primerFoco.current = false;
+        return;
+      }
+      loadPublicaciones();
+    }, [loadPublicaciones]),
+  );
+
+  const handleSeleccionarCategoria = useCallback(
+    (id: string) => {
+      sinElegir.current = false;
+      registrarUsoCategoria(id);
+      // Métrica: toques a categorías, por comuna y categoría (0045).
+      registrarEvento('categoria', { comunaId, categoriaId: id });
+      setCategoriaId(id);
+    },
+    [comunaId],
+  );
+
+  // Métrica: publicaciones vistas (una vez por sesión cada una). Con una sola
+  // foto, verla es verla completa.
+  const alCambiarVisibles = useCallback(
+    ({ viewableItems }: { viewableItems: { item: PublicacionResumen }[] }) => {
+      for (const { item } of viewableItems) {
+        if (!item) continue;
+        registrarEvento('publicacion_vista', { publicacionId: item.id }, item.id);
+        if (item.productos.length <= 1) registrarEvento('publicacion_completa', { publicacionId: item.id }, item.id);
+      }
+    },
+    [],
+  );
+  const configVisibles = useRef({ itemVisiblePercentThreshold: 60 }).current;
+
+  // Desde la tarjeta se puede contactar sin entrar a la publicación
+  // (documento EDIT APP). El clic se registra igual: es la misma métrica.
+  const handleContactar = useCallback((publicacion: PublicacionResumen) => {
+    registrarUsoCategoria(publicacion.categoria_id);
+    contactarPorWhatsApp(publicacion.id, publicacion.telefono, publicacion.titulo);
+  }, []);
+
+  const renderItem = useCallback(
+    ({ item }: { item: PublicacionResumen }) => (
+      // Con su propia `key`: la lista recicla las tarjetas al desplazarse, y
+      // sin esto una tarjeta reciclada conservaría la foto de producto que
+      // estaba mostrando la anterior.
+      <PublicacionCard
+        key={item.id}
+        publicacion={item}
+        onContactar={handleContactar}
+        onVerFoto={setFotoAbierta}
+        onVistaCompleta={() => registrarEvento('publicacion_completa', { publicacionId: item.id }, item.id)}
+      />
+    ),
+    [handleContactar],
+  );
+
+  const keyExtractor = useCallback((item: PublicacionResumen) => item.id, []);
+
+  // Se puede quitar el arranque cuando las consultas DE ESTA COMUNA
+  // terminaron: su nombre, su fila de categorías y su tanda de comercios. Lo
+  // que importa es que hayan terminado, no que traigan resultados: antes se
+  // exigía que hubiera tarjetas y, si la categoría que quedaba elegida no
+  // tenía ninguna, el logo se quedaba puesto para siempre.
+  const listoParaMostrar =
+    !!error ||
+    ((!comunaId || !!nombreComuna) &&
+      categoriasListas &&
+      !loading &&
+      comunaCargada === comunaId &&
+      !faltaPrimera);
+  // `catalogoListo` entra en las dependencias a propósito: si el aviso solo
+  // se mandara cuando cambia `listoParaMostrar`, bastaba con que la pantalla
+  // ya estuviera lista antes (por ejemplo al reelegir la misma comuna) para
+  // que nadie volviera a avisar y el arranque se quedara puesto.
+  useEffect(() => {
+    if (listoParaMostrar && !catalogoListo) avisarCatalogoListo();
+  }, [listoParaMostrar, catalogoListo, avisarCatalogoListo]);
+
+  // Tope de seguridad, y se rearma en cada comuna: pase lo que pase, la app se
+  // muestra a los 8 segundos. Sin esto, una consulta que no responde dejaría a
+  // la persona mirando el negro.
+  useEffect(() => {
+    const id = setTimeout(avisarCatalogoListo, 8000);
+    return () => clearTimeout(id);
+  }, [avisarCatalogoListo, comunaId, catalogoListo]);
+
+  // El solape solo tiene sentido si hay tarjetas; con la lista cargando,
+  // vacía o con error, el negro termina normal y no tapa esos mensajes.
+  const solapar = !loading && !error && publicaciones.length > 0;
+
+  return (
+    <View style={styles.screen}>
+      {/* Encabezado fijo: logo, comuna, banner y categorías no se mueven.
+          Lo único que se desplaza es la lista de publicaciones, que pasa por
+          debajo de ellos. */}
+      <SafeAreaView
+        edges={['top']}
+        style={[
+          styles.encabezado,
+          { paddingBottom: ESPACIO_CATEGORIAS_TARJETA + (solapar ? SOLAPE_TARJETA : 0) },
+        ]}>
+        {/* El perímetro del título. Su alto se descuenta del espacio que ya
+            ocupa la barra de estado, porque el `SafeAreaView` la reserva
+            aparte y si no el título quedaría más abajo de lo configurado.
+
+            Sin sesión el título es además el acceso a la cuenta: no hay barra
+            inferior que lleve a "Perfil". Con sesión no hace falta, porque la
+            barra ya está ahí. */}
+        <View style={[styles.perimetroTitulo, { height: Math.max(0, altoPerimetro - insets.top) }]}>
+          <TituloPosicionado
+            unidad={unidad}
+            altoPerimetro={PERIMETRO_ALTO}
+            recorteArriba={insets.top}
+            medidas={{ centroX, ancho: anchoTitulo, alto: altoTitulo, centroY }}
+            url={urlTitulo}
+            debajo={
+              <ComunaPicker
+                comunas={comunas}
+                selectedId={comunaId}
+                onSelect={elegirComuna}
+                nombre={nombreComuna}
+                alAbrir={recargarComunas}
+              />
+            }
+          />
+          {/* Sin sesión, el LOGO es el acceso a la cuenta —no hay barra
+              inferior que lleve a "Perfil"—, pero solo el logo: antes este
+              toque cubría todo el perímetro y se comía el de la comuna, así
+              que no se podía cambiar de comuna sin iniciar sesión. */}
+          {!session && (
+            <Pressable
+              style={[styles.zonaLogo, { height: Math.max(0, Math.round(centroY * unidad + (altoTitulo * unidad) / 2) - insets.top) }]}
+              onPress={() => router.push('/(auth)/login')}
+              accessibilityRole="button"
+              accessibilityLabel="Iniciar sesión o crear cuenta"
+            />
+          )}
+        </View>
+
+        {/* La key cambia si cambia la lista: el carrusel parte de cero en vez
+            de quedar apuntando a un banner que ya no existe. */}
+        <BannerCarousel
+          key={banners.map((b) => b.id).join(',')}
+          banners={banners}
+          comunaId={comunaId}
+          categoriaId={categoriaId}
+        />
+        {/* La fila solo desaparece para quien mira sin cuenta y no hay nada
+            que filtrar; con cuenta se ven todas las categorías. */}
+        {(session || !comunaVacia || hayHuerfanas) && (
+          <CategoryChips categorias={chips} selectedId={categoriaId} onSelect={handleSeleccionarCategoria} />
+        )}
+      </SafeAreaView>
+
+      <View style={styles.zonaScroll}>
+        {loading && <LoadingState />}
+        {error && <ErrorState message={error} onRetry={() => loadPublicaciones()} />}
+
+        {!loading && !error && (
+          <FlashList
+            // El margen negativo sube la lista dentro de la franja negra: la
+            // primera tarjeta queda montada sobre el cambio de fondo y, al
+            // desplazarse, las tarjetas se recortan justo ahí, porque una
+            // lista no dibuja fuera de sus propios límites.
+            style={StyleSheet.flatten([styles.list, solapar && { marginTop: -SOLAPE_TARJETA }])}
+            data={publicaciones}
+            keyExtractor={keyExtractor}
+            contentContainerStyle={[
+              styles.listContent,
+              // Sin sesión no hay barra de pestañas: la última tarjeta debe poder
+              // quedar por encima de los botones del sistema al terminar el scroll.
+              !session && { paddingBottom: Spacing.five + insets.bottom },
+            ]}
+            // Tirar hacia abajo refresca TODO lo que el administrador puede
+            // haber cambiado mientras tanto: comercios, banners, categorías y
+            // la lista de comunas. Quien solo mira el catálogo nunca cambia de
+            // pantalla, así que este gesto es su forma de ponerse al día sin
+            // cerrar la app.
+            onRefresh={() => {
+              recargarBanners();
+              recargarCategorias();
+              recargarComunas();
+              loadPublicaciones({ isRefresh: true });
+            }}
+            refreshing={refreshing}
+            renderItem={renderItem}
+            onViewableItemsChanged={alCambiarVisibles}
+            viewabilityConfig={configVisibles}
+            // FlashList recicla las tarjetas que salen de la pantalla en vez
+            // de crear nuevas: el desplazamiento es más fluido en teléfonos
+            // lentos. Al acercarse al final se pide la tanda siguiente.
+            onEndReached={cargarMas}
+            // Sin la barrita de desplazamiento del borde derecho: se entiende
+            // que la lista se desliza.
+            showsVerticalScrollIndicator={false}
+            onEndReachedThreshold={1.5}
+            ItemSeparatorComponent={ItemSeparator}
+            ListFooterComponent={
+              cargandoMas && publicaciones.length > 0 ? (
+                <ActivityIndicator color={Colors.accent} style={styles.cargandoMas} />
+              ) : null
+            }
+            ListEmptyComponent={
+              faltaPrimera ? (
+                <ActivityIndicator color={Colors.accent} style={styles.cargandoMas} />
+              ) : comunaVacia && !hayHuerfanas ? (
+                <EmptyState
+                  sobreClaro
+                  title="Todavía no hay comercios en esta comuna"
+                  message="Nadie ha publicado por acá todavía. Prueba con otra comuna mientras tanto."
+                />
+              ) : (
+                <EmptyState sobreClaro title="No encontramos comercios" message="Prueba con otra categoría o cambia de comuna." />
+              )
+            }
+          />
+        )}
+      </View>
+
+      {/* La foto de un producto, a pantalla completa, sin salir del inicio. */}
+      <ImageViewer
+        images={fotoAbierta ? [fotoAbierta] : []}
+        visible={fotoAbierta !== null}
+        initialIndex={0}
+        onClose={() => setFotoAbierta(null)}
+      />
+    </View>
+  );
+}
+
+/**
+ * Entre tarjeta y tarjeta, el mismo espacio que hay entre la tarjeta y el
+ * borde de la pantalla (25 de 1000).
+ */
+function ItemSeparator() {
+  return <View style={{ height: Layout.catalogMargin }} />;
+}
+
+const styles = StyleSheet.create({
+  cargandoMas: {
+    marginVertical: Spacing.four,
+  },
+  screen: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  // Encabezado fijo, sobre negro y de borde a borde.
+  encabezado: {
+    backgroundColor: Colors.background,
+    paddingHorizontal: Layout.catalogMargin,
+  },
+  // Solo la franja del logo, hasta donde termina la imagen: debajo va el
+  // nombre de la comuna, que tiene su propio toque.
+  zonaLogo: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+  },
+  perimetroTitulo: {
+    // El rectángulo donde el admin coloca el título: todo el ancho de la
+    // pantalla y el alto del perímetro. El contenido va posicionado dentro
+    // (ver TituloPosicionado), no apilado. Los márgenes laterales del
+    // catálogo se anulan acá porque las medidas del título se cuentan desde
+    // el borde de la pantalla, no desde el borde del contenido.
+    alignSelf: 'stretch',
+    marginHorizontal: -Layout.catalogMargin,
+    // Red de seguridad: aunque llegara una medida imposible desde la base, el
+    // título no puede dibujarse fuera de su perímetro ni pisar el banner.
+    overflow: 'hidden',
+  },
+  // Única zona que se desplaza. El gris claro empieza donde termina el negro;
+  // la lista va transparente y corrida hacia arriba, para que las tarjetas se
+  // vean sobre el negro antes de recortarse.
+  zonaScroll: {
+    flex: 1,
+    backgroundColor: Colors.backgroundSoft,
+  },
+  list: {
+    flex: 1,
+    backgroundColor: 'transparent',
+  },
+  listContent: {
+    flexGrow: 1,
+    paddingHorizontal: Layout.catalogMargin,
+    paddingBottom: Spacing.five,
+  },
+});
