@@ -1707,6 +1707,10 @@ export async function pagarConFlow(ids: string[]): Promise<string> {
     // Sin la función desplegada, Supabase responde 404.
     if (respuesta?.status === 404) throw new Error('El pago con Flow todavía no está activado.');
     const detalle = respuesta ? await respuesta.json().catch(() => null) : null;
+    // Flow revisa que el correo del comprador exista y rechaza los inventados.
+    if (/userEmail/i.test(detalle?.error ?? '')) {
+      throw new Error('Para pagar necesitas un correo válido. Cambia tu correo en Cuenta e intenta de nuevo.');
+    }
     if (detalle?.error) throw new Error(detalle.error);
     throw new Error('No se pudo abrir el pago. Intenta de nuevo en un momento.');
   }
