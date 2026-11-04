@@ -157,9 +157,14 @@ export function SessionProvider({ children }: PropsWithChildren) {
       setIsLoading(false);
     });
 
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: subscription } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
-      loadProfile(newSession?.user.id);
+      // La sesión del arranque ya la carga getSession() de arriba.
+      if (event === 'INITIAL_SESSION') return;
+      // Mientras corre este aviso la sesión de Supabase queda bloqueada: una
+      // consulta hecha aquí espera a que el bloqueo venza (unos 10 segundos).
+      // Por eso el perfil se lee en el ciclo siguiente.
+      setTimeout(() => void loadProfile(newSession?.user.id), 0);
     });
 
     return () => subscription.subscription.unsubscribe();
