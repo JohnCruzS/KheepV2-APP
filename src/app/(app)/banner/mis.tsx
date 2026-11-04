@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Stack, useFocusEffect, useRouter } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Linking, NativeScrollEvent, NativeSyntheticEvent, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,12 +18,12 @@ import {
   cambiarEnlaceBanner,
   eliminarBanner,
   fetchMisBanners,
-  pagarConFlow,
   pausarBanner,
   precioDeBanners,
   reenviarBanner,
 } from '@/lib/catalog';
 import { getErrorMessage } from '@/lib/errors';
+import { aceptarPoliticaDePago, pagarYEsperar } from '@/lib/pagoBanner';
 import { pickAndCompressImage, uploadCompressedImage } from '@/lib/images';
 import { REJILLA, u } from '@/lib/rejilla';
 import { sincronizarReloj } from '@/lib/relojServidor';
@@ -89,7 +88,8 @@ export default function MisBannersScreen() {
   }, [banners]);
 
   const visto = grupos[Math.min(indice, grupos.length - 1)] as Grupo | undefined;
-  const idsPorPagar = visto && visto.banner.estado === 'aprobado' ? visto.copias.filter((c) => !c.pagado).map((c) => c.id) : [];
+  // Se paga al crearlo (0060): cualquier banner sin pagar muestra "Pagar".
+  const idsPorPagar = visto ? visto.copias.filter((c) => !c.pagado).map((c) => c.id) : [];
   const clavePorPagar = idsPorPagar.join(',');
 
   // El precio lo calcula la base: es lo mismo que se cobra en Flow.
@@ -169,7 +169,7 @@ export default function MisBannersScreen() {
       setOcupado(true);
       const url = await uploadCompressedImage('banners', profile.id, nueva, `banner-${Date.now()}`);
       await Promise.all(g.copias.map((c) => reenviarBanner(c.id, url)));
-      Alert.alert('Reenviado', 'Tu banner volvió a revisión.');
+      Alert.alert('Reenviado', 'Tu banner volvió a revisión con el mismo pago.');
       cargar();
     } catch (err) {
       Alert.alert('No se pudo reenviar', getErrorMessage(err, 'Intenta de nuevo.'));
@@ -179,23 +179,41 @@ export default function MisBannersScreen() {
   }
 
   /**
-   * Aprobado y sin pagar: se abre la página de pago de Flow. Al volver se
-   * recarga unas veces, porque Flow avisa el pago a la base un momento
-   * después.
+   * Sin pagar (se cerró Flow antes de terminar): se acepta la política y se
+   * abre otra vez la página de pago.
    */
+  /**
+   * Un banner sin pagar se puede pagar o eliminar desde el mismo aviso. Sin
+   * pago no llegó a revisión, así que borrarlo no necesita otra confirmación.
+   */
+  function pagoPendiente() {
+    Alert.alert('Pago pendiente', 'Este banner todavía no está pagado y no pasa a revisión hasta que lo pagues.', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Eliminar', style: 'destructive', onPress: () => void eliminarPendiente() },
+      { text: 'Pagar', onPress: () => void pagar() },
+    ]);
+  }
+
+  async function eliminarPendiente() {
+    setOcupado(true);
+    try {
+      for (const c of g.copias.filter((x) => !x.pagado)) await eliminarBanner(c.id);
+      setIndice(0);
+      cargar();
+    } catch (err) {
+      Alert.alert('No se pudo eliminar', getErrorMessage(err, 'Intenta de nuevo.'));
+    } finally {
+      setOcupado(false);
+    }
+  }
+
   async function pagar() {
     if (pagando.current) return;
     pagando.current = true;
-    setOcupado(true);
     try {
-      const url = await pagarConFlow(idsPorPagar);
-      await WebBrowser.openAuthSessionAsync(url, 'kheep://banner/mis');
-      for (let i = 0; i < 4; i++) {
-        const { banners: lista } = await fetchMisBanners();
-        setBanners(lista);
-        if (lista.filter((b) => idsPorPagar.includes(b.id)).every((b) => b.pagado)) break;
-        await new Promise((r) => setTimeout(r, 1500));
-      }
+      if (!(await aceptarPoliticaDePago())) return;
+      setOcupado(true);
+      setBanners(await pagarYEsperar(idsPorPagar));
     } catch (err) {
       Alert.alert('No se pudo pagar', getErrorMessage(err, 'Intenta de nuevo.'));
     } finally {
@@ -210,14 +228,13 @@ export default function MisBannersScreen() {
   }
 
   // Lo que va donde el tiempo: el estado si todavía no se muestra.
-  const estado =
-    actual.estado === 'pendiente'
-      ? 'En revisión'
+  const estado = !actual.pagado
+    ? 'Pendiente de pago'
+    : actual.estado === 'pendiente'
+      ? 'Pagado · En revisión'
       : actual.estado === 'rechazado'
         ? 'Rechazado · toca la imagen'
-        : !actual.pagado
-          ? 'Pendiente de pago'
-          : null;
+        : null;
   const enComunas = g.copias.some((c) => c.comuna_id === null) ? null : g.copias.map((c) => c.comuna_id as string);
 
   return (
@@ -269,10 +286,10 @@ export default function MisBannersScreen() {
                 />
               </Pressable>
             )}
-            {/* Falta pagar: "Pagar $75.000" en rojo, tocarlo abre Flow. */}
+            {/* Falta pagar: "Pagar $75.000" en rojo; tocarlo ofrece pagar o eliminar. */}
             {estado === 'Pendiente de pago' ? (
               <Pressable
-                onPress={() => void pagar()}
+                onPress={pagoPendiente}
                 disabled={ocupado}
                 hitSlop={8}
                 style={styles.filaIzquierda}

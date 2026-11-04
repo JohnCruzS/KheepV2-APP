@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
-import { Stack, useRouter } from 'expo-router';
+import { Redirect, Stack, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Text } from '@/components/ui/Texto';
 import { BotonPie } from '@/components/ui/BotonPie';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -25,6 +25,7 @@ import {
   reenviarBanner,
 } from '@/lib/catalog';
 import { getErrorMessage } from '@/lib/errors';
+import { AVISO_PAGO_BANNER_CORTO, URL_TERMINOS, aceptarPoliticaDePago, pagarYEsperar } from '@/lib/pagoBanner';
 import { PickedImage, pickAndCompressImage, uploadCompressedImage } from '@/lib/images';
 import { supabase, usuarioActual } from '@/lib/supabase';
 import { useSession } from '@/providers/SessionProvider';
@@ -106,7 +107,10 @@ export default function PublicarBannerScreen() {
   async function handlePickImagen() {
     try {
       const image = await pickAndCompressImage({ uso: 'banner' });
-      if (image) setImagen(image);
+      if (image) {
+        setImagen(image);
+        setError(null);
+      }
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo abrir la galería.'));
     }
@@ -142,7 +146,8 @@ export default function PublicarBannerScreen() {
       enlaceEscrito && !/^https?:\/\//i.test(enlaceEscrito) ? `https://${enlaceEscrito}` : enlaceEscrito;
 
     // El carrusel tiene cupo: con más banners de la cuenta, ninguno alcanza a
-    // verse. Se comprueba antes de cobrar.
+    // verse. Se comprueba antes de cobrar, con el botón en espera mientras tanto.
+    setSaving(true);
     try {
       const ocupados = await Promise.all(destinos.map((id) => contarBannersVigentes(id)));
       const llenas = destinos.filter((_, i) => ocupados[i] >= CUPO_BANNERS);
@@ -153,42 +158,56 @@ export default function PublicarBannerScreen() {
             (nombres.length > 3 ? ` y ${nombres.length - 3} más` : '') +
             '. Apágalas o espera a que termine alguno.',
         );
+        setSaving(false);
         return;
       }
     } catch {
-      // Si no se puede comprobar el cupo, se deja publicar: el banner está
-      // pagado y bloquearlo por una consulta que falló sería peor.
+      // Si no se puede comprobar el cupo, se deja publicar: bloquearlo por
+      // una consulta que falló sería peor.
     }
+    setSaving(false);
+
+    const comerciante = !esAdmin && !esZona;
+    // El comerciante paga al crearlo (0060): primero acepta la política.
+    if (comerciante && !(await aceptarPoliticaDePago())) return;
 
     setSaving(true);
     try {
       const { data: auth } = await usuarioActual();
       const imagenUrl = await uploadCompressedImage('banners', auth.user!.id, imagen, `banner-${Date.now()}`);
-      await crearBanners({
+      const ids = await crearBanners({
         imagenUrl,
         comunaIds: destinos,
         dias,
         enlace: enlaceLimpio || null,
-        pagado: esAdmin || esZona,
+        pagado: !comerciante,
         prioritario: esAdmin,
       });
 
-      if (!esAdmin && !esZona) {
-        setSuccess('¡Listo! Tu banner quedó en revisión. Cuando lo aprueben, se publica.');
-      } else {
+      if (!comerciante) {
         setSuccess('¡Listo! Tu banner ya está activo.');
+        setImagen(null);
+        setDias(3);
+        setEnlace('');
+        cargar();
+        return;
       }
 
-      setImagen(null);
-      if (!esAdmin && !esZona) setElegidas([]);
-      setDias(3);
-      setEnlace('');
-      cargar();
-      // El comerciante vuelve a "Mis banners", donde ya aparece el nuevo.
-      if (!esAdmin && !esZona) {
-        Alert.alert('¡Listo!', 'Tu banner quedó en revisión. Cuando lo aprueben, se publica.');
-        router.replace('/(app)/banner/mis');
+      // Se abre Flow. Si no termina de pagar, el banner queda en "Mis
+      // banners" con "Pagar", y sin pago no llega a revisión.
+      try {
+        const lista = await pagarYEsperar(ids);
+        const pagado = lista.filter((b) => ids.includes(b.id)).every((b) => b.pagado);
+        Alert.alert(
+          pagado ? '¡Pago recibido!' : 'Pago pendiente',
+          pagado
+            ? 'Tu banner quedó en revisión. Cuando lo aprueben, empieza a mostrarse por sus días.'
+            : 'Tu banner quedó guardado. Termina el pago desde Mis banners para que pase a revisión.',
+        );
+      } catch (err) {
+        Alert.alert('No se pudo pagar', getErrorMessage(err, 'Termina el pago desde Mis banners.'));
       }
+      router.replace('/(app)/banner/mis');
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo publicar el banner.'));
     } finally {
@@ -224,6 +243,9 @@ export default function PublicarBannerScreen() {
   };
   // Ejemplo: dos comunas de $20.000 por 5 días = $200.000. Sin comunas, $0.
   const precio = dias * elegidas.reduce((suma, id) => suma + precioDe(id), 0);
+
+  // Sin sesión no hay comunas ni precios que cargar: se pide entrar.
+  if (!session) return <Redirect href="/(auth)/login" />;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
@@ -274,8 +296,19 @@ export default function PublicarBannerScreen() {
           </Pressable>
         </View>
 
+        {/* Arriba del aviso, para que no queden tapados por el botón. */}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
         {success ? <Text style={styles.successText}>{success}</Text> : null}
+
+        {/* La política de pago, antes del botón que cobra. */}
+        {!esAdmin && !esZona && (
+          <Text style={styles.politica}>
+            {AVISO_PAGO_BANNER_CORTO}{' '}
+            <Text style={styles.politicaEnlace} onPress={() => Linking.openURL(URL_TERMINOS).catch(() => {})}>
+              Términos
+            </Text>
+          </Text>
+        )}
 
       </FormScroll>
 
@@ -298,6 +331,7 @@ export default function PublicarBannerScreen() {
         onListo={(ids) => {
           setElegidas(ids);
           setPickerOpen(false);
+          setError(null);
         }}
       />
     </SafeAreaView>
@@ -305,18 +339,20 @@ export default function PublicarBannerScreen() {
 }
 
 function EstadoBanner({ banner }: { banner: MiBanner }) {
+  if (!banner.pagado && !banner.activo) {
+    return <Text style={[styles.estadoLabel, styles.estadoPendiente]}>Pendiente de pago</Text>;
+  }
   if (banner.estado === 'pendiente') {
-    return <Text style={[styles.estadoLabel, styles.estadoPendiente]}>En revisión</Text>;
+    return <Text style={[styles.estadoLabel, styles.estadoPendiente]}>Pagado · En revisión</Text>;
   }
   if (banner.estado === 'rechazado') {
-    return <Text style={[styles.estadoLabel, styles.estadoRechazado]}>Rechazado: cambia la imagen y reenvíalo</Text>;
+    return (
+      <Text style={[styles.estadoLabel, styles.estadoRechazado]}>Rechazado: cambia la imagen y reenvíalo con el mismo pago</Text>
+    );
   }
   // "pagado" solo aplica a un comerciante — un banner de admin queda activo
   // sin pasar por ahí, así que lo que de verdad importa para mostrar el
   // estado es `activo`, no `pagado` (ver fn_banner_defaults en la 0012).
-  if (!banner.activo && !banner.pagado) {
-    return <Text style={[styles.estadoLabel, styles.estadoPendiente]}>Aprobado · pendiente de pago</Text>;
-  }
   if (banner.activo && banner.fecha_fin) {
     const fecha = new Date(banner.fecha_fin);
     const vencido = fecha.getTime() < Date.now();
@@ -633,6 +669,18 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.bold,
     fontSize: 18,
     color: Colors.text,
+  },
+  politica: {
+    fontFamily: Fonts.delgada,
+    marginTop: Spacing.four,
+    fontSize: 13,
+    lineHeight: 19,
+    color: Colors.textMuted,
+    textAlign: 'center',
+  },
+  politicaEnlace: {
+    color: Colors.text,
+    textDecorationLine: 'underline',
   },
   errorText: {
     fontFamily: Fonts.light,

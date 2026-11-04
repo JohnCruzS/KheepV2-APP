@@ -1547,8 +1547,9 @@ export type BannerEnRevision = {
 
 /**
  * Los banners pendientes de revisión, del que más espera al más reciente (la
- * base decide cuáles ve cada admin). Se pueden pedir solo los de una comuna
- * o los de un perfil.
+ * base decide cuáles ve cada admin). Solo los pagados: un banner se paga al
+ * crearlo y sin pago no llega a revisión (0060). Se pueden pedir solo los de
+ * una comuna o los de un perfil.
  */
 export async function fetchBannersPendientes(filtro?: { comunaId?: string; usuarioId?: string }): Promise<BannerEnRevision[]> {
   let request = supabase
@@ -1557,6 +1558,7 @@ export async function fetchBannersPendientes(filtro?: { comunaId?: string; usuar
       'id, imagen_url, usuario_id, dias, enlace, created_at, comuna:comunas(nombre), autor:profiles!banners_usuario_id_fkey(nombre)',
     )
     .eq('estado', 'pendiente')
+    .eq('pagado', true)
     .order('created_at', { ascending: true });
   if (filtro?.comunaId) request = request.eq('comuna_id', filtro.comunaId);
   if (filtro?.usuarioId) request = request.eq('usuario_id', filtro.usuarioId);
@@ -1568,8 +1570,8 @@ export async function fetchBannersPendientes(filtro?: { comunaId?: string; usuar
 }
 
 async function cambiarEstadoBanner(id: string, estado: 'aprobado' | 'rechazado'): Promise<void> {
-  // Aprobar no lo activa: el comerciante lo paga con Flow después de la
-  // aprobación, y la confirmación del pago lo activa por sus días (0056).
+  // El banner ya viene pagado: aprobarlo lo activa en ese momento por sus días
+  // (0060). Rechazarlo conserva el pago para cuando se reenvíe.
   const { data, error } = await supabase.from('banners').update({ estado }).eq('id', id).select('id');
   if (error) throw error;
   if (!data || data.length === 0) throw new Error('No se pudo cambiar el banner. Revisa que tengas permiso en su comuna.');
@@ -1578,7 +1580,10 @@ async function cambiarEstadoBanner(id: string, estado: 'aprobado' | 'rechazado')
 export const aprobarBanner = (id: string) => cambiarEstadoBanner(id, 'aprobado');
 export const rechazarBanner = (id: string) => cambiarEstadoBanner(id, 'rechazado');
 
-/** El comerciante cambia la imagen de un banner rechazado y lo manda de nuevo a revisión. */
+/**
+ * El comerciante cambia la imagen de un banner rechazado y lo manda de nuevo a
+ * revisión, con el mismo pago. Se puede repetir hasta que se apruebe.
+ */
 export async function reenviarBanner(id: string, imagenUrl: string): Promise<void> {
   const { data, error } = await supabase
     .from('banners')
@@ -1694,8 +1699,8 @@ export async function precioDeBanners(ids: string[]): Promise<number | null> {
 
 /**
  * Empieza el pago con Flow (Edge Function `flow`, 0056): devuelve la página
- * de pago de Flow, que la app abre. El banner se activa cuando Flow confirma
- * el pago, no antes.
+ * de pago de Flow, que la app abre. Se paga al crear el banner (0060); se
+ * activa cuando está pagado y aprobado.
  */
 export async function pagarConFlow(ids: string[]): Promise<string> {
   const { data, error } = await supabase.functions.invoke<{ url?: string; error?: string }>('flow/crear', {

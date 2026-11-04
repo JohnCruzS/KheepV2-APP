@@ -1,12 +1,13 @@
-// Edge Function `flow`: pago de banners con Flow (flow.cl). Ver 0056.
+// Edge Function `flow`: pago de banners con Flow (flow.cl). Ver 0056 y 0060.
 //
 // Tres rutas:
 //   POST /flow/crear      La app (con la sesión del comerciante) pide pagar
-//                         sus banners aprobados: se calcula el precio en la
-//                         base, se crea el pago en Flow y se devuelve la URL
-//                         de la página de pago.
+//                         sus banners recién creados: se calcula el precio en
+//                         la base, se crea el pago en Flow y se devuelve la
+//                         URL de la página de pago.
 //   POST /flow/confirmar  Flow avisa que hubo un pago (urlConfirmation). Se
-//                         comprueba con Flow y, si está pagado, se activa.
+//                         comprueba con Flow y, si está pagado, se marca; el
+//                         banner se activa cuando además está aprobado.
 //   POST /flow/retorno    Flow devuelve al comprador (urlReturn): se
 //                         comprueba igual y se vuelve a la app.
 //
@@ -124,13 +125,13 @@ async function crear(req: Request): Promise<Response> {
 
   const { data: banners, error } = await admin
     .from('banners')
-    .select('id, usuario_id, estado, pagado')
+    .select('id, usuario_id, pagado')
     .in('id', banner_ids);
   if (error) throw error;
   if (!banners || banners.length !== banner_ids.length || banners.some((b) => b.usuario_id !== usuario.id)) {
     return json({ error: 'Ese banner no es tuyo.' }, 403);
   }
-  if (banners.some((b) => b.estado !== 'aprobado')) return json({ error: 'El banner tiene que estar aprobado para pagarlo.' }, 400);
+  // Se paga al crearlo (0060): pendiente, rechazado o aprobado, mientras no esté pagado.
   const porPagar = banners.filter((b) => !b.pagado).map((b) => b.id);
   if (porPagar.length === 0) return json({ error: 'Ese banner ya está pagado.' }, 400);
 
