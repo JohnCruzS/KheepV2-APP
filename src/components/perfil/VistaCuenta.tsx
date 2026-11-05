@@ -83,9 +83,16 @@ export function VistaCuenta({
     }
   }
 
-  const nivelLabel = profile.rol === 'admin' ? 'Administrador' : profile.nivel === 2 ? 'Verificado' : 'En revisión';
-  const nivelStyle =
-    profile.rol === 'admin' ? styles.badgeAdmin : profile.nivel === 2 ? styles.badgeVerificado : styles.badgeRevision;
+  const esAdmin = profile.rol === 'admin' || profile.rol === 'admin_zona';
+  const nivelLabel =
+    profile.rol === 'admin'
+      ? 'Administrador'
+      : profile.rol === 'admin_zona'
+        ? 'Sub administrador'
+        : profile.nivel === 2
+          ? 'Verificado'
+          : 'En revisión';
+  const nivelStyle = esAdmin ? styles.badgeAdmin : profile.nivel === 2 ? styles.badgeVerificado : styles.badgeRevision;
 
   return (
     <View style={styles.account}>
