@@ -297,7 +297,7 @@ export default function AdministradorScreen() {
       ) : (
         <>
           <FormScroll contentContainerStyle={styles.content}>
-            <TextInput
+            <TextInput maxFontSizeMultiplier={1}
               placeholder="Nombre"
               placeholderTextColor={Colors.text}
               value={nombre}
@@ -305,7 +305,7 @@ export default function AdministradorScreen() {
               autoCapitalize="words"
               style={styles.campo}
             />
-            <TextInput
+            <TextInput maxFontSizeMultiplier={1}
               placeholder="Correo"
               placeholderTextColor={Colors.text}
               value={email}

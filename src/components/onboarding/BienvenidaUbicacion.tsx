@@ -156,7 +156,7 @@ function ListaComunas({ comunas, onElegir }: { comunas: Comuna[]; onElegir: (id:
         />
       </View>
 
-      <TextInput
+      <TextInput maxFontSizeMultiplier={1}
         placeholder={escribiendo ? undefined : 'Buscar'}
         onFocus={() => setEscribiendo(true)}
         onBlur={() => setEscribiendo(false)}

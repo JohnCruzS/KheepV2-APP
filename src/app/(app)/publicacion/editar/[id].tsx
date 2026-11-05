@@ -1,4 +1,4 @@
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -127,6 +127,9 @@ export default function EditarPublicacionScreen() {
       setGuardando(false);
     }
   }
+
+  // Editar es del dueño, que es comerciante: los administradores no publican.
+  if (profile && profile.rol !== 'comerciante') return <Redirect href="/(app)/(tabs)/dashboard" />;
 
   return (
     <SafeAreaView style={styles.pantalla} edges={['top', 'bottom']}>

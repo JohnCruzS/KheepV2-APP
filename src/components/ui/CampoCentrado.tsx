@@ -66,7 +66,7 @@ export function CampoCentrado({
     // Tocar en cualquier parte del campo (y un poco alrededor, el resto de la
     // cápsula) abre el teclado, también después de cerrarlo tocando afuera.
     <Pressable style={styles.caja} onPress={() => campo.current?.focus()} hitSlop={{ top: 20, bottom: 20 }} accessible={false}>
-      <TextInput
+      <TextInput maxFontSizeMultiplier={1}
         {...props}
         ref={campo}
         value={value}

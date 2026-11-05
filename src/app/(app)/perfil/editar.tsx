@@ -157,7 +157,7 @@ function EditarPerfilForm({
         keyboardType="number-pad"
         maxLength={9}
         placeholder="912345678"
-        hint="9 y ocho dígitos (sin el +56, lo agregamos nosotros)"
+        hint="9 y ocho dígitos, sin el +56"
       />
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}

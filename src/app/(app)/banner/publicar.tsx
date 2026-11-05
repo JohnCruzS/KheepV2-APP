@@ -9,7 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { EncabezadoMarca, useHuecoHastaBanner } from '@/components/ui/EncabezadoMarca';
 import { SelectorComunasBanner } from '@/components/banner/SelectorComunasBanner';
 import { Button } from '@/components/ui/Button';
-import { FormScroll } from '@/components/ui/FormScroll';
+import { AjusteAPantalla } from '@/components/ui/AjusteAPantalla';
 import { Colors, Fonts, Radius, Spacing } from '@/constants/theme';
 import {
   Comuna,
@@ -246,6 +246,8 @@ export default function PublicarBannerScreen() {
 
   // Sin sesión no hay comunas ni precios que cargar: se pide entrar.
   if (!session) return <Redirect href="/(auth)/login" />;
+  // Los administradores publican sus banners desde el panel (Banners, Nuevo).
+  if (profile && profile.rol !== 'comerciante') return <Redirect href="/(app)/admin/banners" />;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
@@ -257,7 +259,8 @@ export default function PublicarBannerScreen() {
           ubicación, los días y, abajo, el botón con lo que se paga (los días
           por la suma del precio de cada comuna elegida). "Mis banners", al
           final de todo. */}
-      <FormScroll contentContainerStyle={styles.content}>
+      {/* Todo en una vista: si no cabe, se achica por igual lo justo. */}
+      <AjusteAPantalla style={styles.content}>
         {/* A la misma altura y del mismo tamaño que el banner del inicio. */}
         <Pressable onPress={handlePickImagen} style={[styles.foto, { marginTop: hueco }]} accessibilityRole="button" accessibilityLabel="Subir imagen">
           {imagen ? (
@@ -267,7 +270,7 @@ export default function PublicarBannerScreen() {
           )}
         </Pressable>
 
-        <TextInput
+        <TextInput maxFontSizeMultiplier={1}
           value={enlace}
           onChangeText={setEnlace}
           placeholder="Enlace"
@@ -310,7 +313,7 @@ export default function PublicarBannerScreen() {
           </Text>
         )}
 
-      </FormScroll>
+      </AjusteAPantalla>
 
       {/* Lo que se paga, en el botón rojo de abajo: mismo tamaño y misma
           altura que en las demás vistas. */}
@@ -467,7 +470,7 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: u(REJILLA.margenLateral),
-    paddingBottom: Spacing.six,
+    paddingBottom: Spacing.three,
   },
   sectionLabel: {
     fontFamily: Fonts.semiBold,

@@ -182,7 +182,7 @@ export default function BannerNuevoScreen() {
           </ScrollView>
         </View>
 
-        <TextInput
+        <TextInput maxFontSizeMultiplier={1}
           value={enlace}
           onChangeText={setEnlace}
           placeholder="Enlace"

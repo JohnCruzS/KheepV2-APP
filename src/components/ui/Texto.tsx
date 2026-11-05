@@ -15,6 +15,11 @@ import { Text as TextoNativo, TextProps } from 'react-native';
  * texto, corta los tramos de números y las barras, y a cada tramo le pone su
  * fuente. El resto del estilo (color, tamaño, alineación, líneas máximas) se
  * hereda del texto de afuera, así que se usa igual que el `Text` de siempre.
+ *
+ * El tamaño no crece con la letra del sistema (`maxFontSizeMultiplier`): todo el
+ * diseño se mide con la rejilla del ancho de pantalla, y un texto agrandado
+ * desarmaba las vistas en los teléfonos con la letra grande. Así se ve igual
+ * en todos. Un texto puede pedir otro límite pasando la propiedad.
  */
 export const FUENTE_NUMEROS = 'Arimo_400Regular';
 export const FUENTE_BARRA = 'Montserrat_500Medium';
@@ -64,7 +69,7 @@ function transformar(children: ReactNode): ReactNode {
 
 export const Text = forwardRef<TextoNativo, TextProps>(function Text({ children, ...props }, ref) {
   return (
-    <TextoNativo ref={ref} {...props}>
+    <TextoNativo ref={ref} maxFontSizeMultiplier={1} {...props}>
       {transformar(children)}
     </TextoNativo>
   );

@@ -78,7 +78,7 @@ export function SelectorComuna({
             />
           </View>
 
-          <TextInput
+          <TextInput maxFontSizeMultiplier={1}
             value={busqueda}
             onChangeText={setBusqueda}
             placeholder={escribiendo ? undefined : 'Buscar'}

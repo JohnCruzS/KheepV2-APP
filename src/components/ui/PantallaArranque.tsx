@@ -10,13 +10,12 @@ import { Colors, Fonts, Spacing } from '@/constants/theme';
  * Ancho de la marca, en dp. La imagen va recortada a la marca misma (sin el
  * aire alrededor), así que este número es lo que se ve de verdad.
  *
- * Tiene que ser un tamaño FIJO, no un porcentaje de la pantalla: Android
- * dibuja el splash nativo con su lienzo de 288 dp a escala 1:1 en cualquier
- * teléfono, y la marca ocupa 328 de sus 864 px (xxhdpi) = 109,3 dp. Con el
- * mismo número, el paso del splash a la app no se nota y todo el arranque se
- * ve como UNA sola vista.
+ * Es el mismo `imageWidth` del splash nativo en app.json, que usa esta misma
+ * imagen: Android la dibuja a ese ancho fijo en cualquier teléfono. Con los
+ * dos iguales, el paso del splash a la app no se nota y todo el arranque se
+ * ve como UNA sola vista. Si se cambia uno, hay que cambiar el otro.
  */
-const ANCHO_MARCA = 328 / 3;
+const ANCHO_MARCA = 109;
 /** Alto entre ancho de assets/images/marca-arranque.png (948 x 788). */
 const PROPORCION_IMAGEN_ALTO = 788 / 948;
 

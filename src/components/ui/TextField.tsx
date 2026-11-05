@@ -42,7 +42,7 @@ export function TextField({
   return (
     <View style={[styles.container, estiloContenedor]}>
       <View style={[styles.inputRow, claro && styles.inputRowClaro]}>
-        <TextInput
+        <TextInput maxFontSizeMultiplier={1}
           ref={inputRef}
           placeholder={label}
           placeholderTextColor={Colors.placeholder}

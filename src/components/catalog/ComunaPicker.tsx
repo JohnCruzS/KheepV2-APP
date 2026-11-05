@@ -1,7 +1,8 @@
 import { memo, useMemo, useState } from 'react';
 import { useWindowDimensions } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
-import { KeyboardAvoidingView, Modal, Pressable, StyleSheet, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
+import { KeyboardAvoidingView, Modal, Pressable, StyleSheet, View, type StyleProp, type TextStyle } from 'react-native';
+import { Text } from '@/components/ui/Texto';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Ionicons } from '@expo/vector-icons';

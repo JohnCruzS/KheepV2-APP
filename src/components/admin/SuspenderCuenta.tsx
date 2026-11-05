@@ -86,7 +86,7 @@ export function SuspenderCuenta({
             </Text>
 
             <Text style={styles.titulo}>Motivo</Text>
-            <TextInput
+            <TextInput maxFontSizeMultiplier={1}
               value={motivo}
               onChangeText={setMotivo}
               placeholder="Ej: publicaciones engañosas"
@@ -128,7 +128,7 @@ export function SuspenderCuenta({
 
             {aMedida && (
               <View style={styles.aMedida}>
-                <TextInput
+                <TextInput maxFontSizeMultiplier={1}
                   value={diasLibres}
                   onChangeText={(texto) => {
                     const numeros = texto.replace(/[^0-9]/g, '').slice(0, 3);

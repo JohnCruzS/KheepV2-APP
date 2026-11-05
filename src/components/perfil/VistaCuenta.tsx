@@ -152,10 +152,9 @@ export function VistaCuenta({
           su manera (y a todo color), y acá conviven con el resto de la
           interfaz, que es de un solo color.
 
-          Ya no está el acceso al panel de administración: el admin lo tiene
-          en su propia pestaña, así que acá solo repetía un camino. Y
-          "Publicar banner" es para los comerciantes —que no tienen panel—;
-          el admin lo hace desde Panel Admin → Banners. */}
+          Para un administrador solo hay editar perfil y cerrar sesión: el
+          panel está en su propia pestaña y los banners se publican desde
+          Panel, Banners. */}
       {esComerciante ? (
         // "Publicar anuncio" y "Salir" en texto rojo.
         <>
@@ -177,13 +176,6 @@ export function VistaCuenta({
               label="Editar perfil"
               onPress={() => router.push('/(app)/perfil/editar')}
             />
-            {profile.rol !== 'admin' && (
-              <FilaAccion
-                icono="megaphone-outline"
-                label="Publicar banner"
-                onPress={() => router.push('/(app)/banner/publicar')}
-              />
-            )}
           </View>
           <Button label="Cerrar sesión" variant="secondary" onPress={salir} />
         </>

@@ -586,11 +586,14 @@ export default function DashboardScreen() {
           comunaId={comunaId}
           categoriaId={categoriaId}
         />
-        {/* La fila solo desaparece para quien mira sin cuenta y no hay nada
-            que filtrar; con cuenta se ven todas las categorías. */}
-        {(session || !comunaVacia || hayHuerfanas) && (
-          <CategoryChips categorias={chips} selectedId={categoriaId} onSelect={handleSeleccionarCategoria} />
-        )}
+        {/* La fila siempre ocupa su lugar, para que el encabezado mida lo
+            mismo en cualquier comuna. Sin cuenta y sin nada que filtrar queda
+            solo su espacio negro, sin categorías; con cuenta se ven todas. */}
+        <CategoryChips
+          categorias={session || !comunaVacia || hayHuerfanas ? chips : []}
+          selectedId={categoriaId}
+          onSelect={handleSeleccionarCategoria}
+        />
       </SafeAreaView>
 
       <View style={styles.zonaScroll}>

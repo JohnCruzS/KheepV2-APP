@@ -1,9 +1,10 @@
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { Text } from '@/components/ui/Texto';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PanelGeneral } from '@/components/admin/PanelGeneral';
 import { PerfilComercio } from '@/components/perfil/PerfilComercio';
+import { AjusteAPantalla } from '@/components/ui/AjusteAPantalla';
 import { EncabezadoMarca } from '@/components/ui/EncabezadoMarca';
 import { Button } from '@/components/ui/Button';
 import { Colors, Fonts, Radius, Spacing } from '@/constants/theme';
@@ -56,12 +57,12 @@ export default function PerfilScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <EncabezadoMarca subtitulo="Cuenta" />
 
-      {/* Desplazable: en pantallas más chicas el contenido no cabe entero y
-          el botón de cerrar sesión quedaba cortado bajo la barra de abajo. */}
+      {/* Todo en una vista, sin deslizar: si no cabe, se achica por igual lo
+          justo para que quepa; si cabe, se ve con su tamaño real. */}
       <View style={styles.card}>
-        <ScrollView contentContainerStyle={styles.cardContent} showsVerticalScrollIndicator={false}>
+        <AjusteAPantalla style={styles.cardContent} llenar>
           <PerfilComercio profile={profile} email={session.user.email} />
-        </ScrollView>
+        </AjusteAPantalla>
       </View>
     </SafeAreaView>
   );
@@ -103,7 +104,6 @@ const styles = StyleSheet.create({
   // Ocupa toda la pantalla: así los botones de abajo (comuna, categoría,
   // "Mis banners", "Salir") quedan abajo, como el diseño.
   cardContent: {
-    flexGrow: 1,
     paddingHorizontal: Spacing.four,
     paddingTop: Spacing.three,
   },

@@ -13,7 +13,7 @@ export function CampoClave({ style, ...props }: Omit<TextInputProps, 'secureText
   const [visible, setVisible] = useState(false);
   return (
     <View style={styles.contenedor}>
-      <TextInput
+      <TextInput maxFontSizeMultiplier={1}
         {...props}
         secureTextEntry={!visible}
         // El cursor en rojo, como en los demás editores.

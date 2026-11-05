@@ -322,7 +322,7 @@ function NuevoLogoModal({ visible, onClose, onSaved }: { visible: boolean; onClo
               )}
             </Pressable>
 
-            <TextInput
+            <TextInput maxFontSizeMultiplier={1}
               placeholder="Nombre (ej: Fiestas Patrias)"
               placeholderTextColor={Colors.placeholder}
               value={nombre}
@@ -330,7 +330,7 @@ function NuevoLogoModal({ visible, onClose, onSaved }: { visible: boolean; onClo
               style={styles.input}
             />
             <View style={styles.fechasRow}>
-              <TextInput
+              <TextInput maxFontSizeMultiplier={1}
                 placeholder="Desde DD/MM/AAAA"
                 placeholderTextColor={Colors.placeholder}
                 value={inicio}
@@ -338,7 +338,7 @@ function NuevoLogoModal({ visible, onClose, onSaved }: { visible: boolean; onClo
                 keyboardType="numbers-and-punctuation"
                 style={[styles.input, styles.inputFecha]}
               />
-              <TextInput
+              <TextInput maxFontSizeMultiplier={1}
                 placeholder="Hasta DD/MM/AAAA"
                 placeholderTextColor={Colors.placeholder}
                 value={fin}

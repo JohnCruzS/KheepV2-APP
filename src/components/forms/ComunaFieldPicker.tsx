@@ -71,7 +71,7 @@ export function ComunaFieldPicker({
           <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.sheetTitle}>{label}</Text>
 
-            <TextInput
+            <TextInput maxFontSizeMultiplier={1}
               value={busqueda}
               onChangeText={setBusqueda}
               placeholder={escribiendo ? undefined : 'Buscar comuna…'}
