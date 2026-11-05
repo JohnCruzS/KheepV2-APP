@@ -16,6 +16,7 @@ import { Colors, Fonts, Spacing } from '@/constants/theme';
 import {
   MiBanner,
   cambiarEnlaceBanner,
+  DIAS_SIN_PAGAR,
   eliminarBanner,
   fetchMisBanners,
   pausarBanner,
@@ -187,11 +188,15 @@ export default function MisBannersScreen() {
    * pago no llegó a revisión, así que borrarlo no necesita otra confirmación.
    */
   function pagoPendiente() {
-    Alert.alert('Pago pendiente', 'Este banner todavía no está pagado y no pasa a revisión hasta que lo pagues.', [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Eliminar', style: 'destructive', onPress: () => void eliminarPendiente() },
-      { text: 'Pagar', onPress: () => void pagar() },
-    ]);
+    Alert.alert(
+      'Pago pendiente',
+      `Este banner todavía no está pagado y no pasa a revisión hasta que lo pagues. Si no lo pagas, se borra solo a los ${DIAS_SIN_PAGAR} días de creado.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Eliminar', style: 'destructive', onPress: () => void eliminarPendiente() },
+        { text: 'Pagar', onPress: () => void pagar() },
+      ],
+    );
   }
 
   async function eliminarPendiente() {

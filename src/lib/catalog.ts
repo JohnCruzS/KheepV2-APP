@@ -1505,7 +1505,27 @@ export type MiBanner = {
   fecha_fin: string | null;
   /** Revisión (0037): pendiente, aprobado o rechazado. */
   estado: 'pendiente' | 'aprobado' | 'rechazado';
+  created_at?: string;
 };
+
+/** Días que un banner puede quedar sin pagar antes de borrarse solo. */
+export const DIAS_SIN_PAGAR = 7;
+
+/**
+ * Borra los banners que siguen sin pagar después de `DIAS_SIN_PAGAR` días,
+ * con su imagen, y devuelve los que quedan. Un banner sin pagar solo lo ve su
+ * dueño, así que se revisa cada vez que abre "Mis banners": nunca alcanza a
+ * ver uno vencido.
+ */
+async function quitarSinPagarVencidos(banners: MiBanner[]): Promise<MiBanner[]> {
+  const limite = Date.now() - DIAS_SIN_PAGAR * 24 * 60 * 60 * 1000;
+  const vencido = (b: MiBanner) => !b.pagado && !!b.created_at && new Date(b.created_at).getTime() < limite;
+  for (const b of banners.filter(vencido)) {
+    // Si falla (sin señal), se reintenta la próxima vez.
+    await eliminarBanner(b.id).catch(() => {});
+  }
+  return banners.filter((b) => !vencido(b));
+}
 
 /**
  * Los banners del comerciante. `conRevision` dice si la base ya tiene la
@@ -1516,7 +1536,7 @@ export async function fetchMisBanners(): Promise<{ banners: MiBanner[]; conRevis
   const { data: auth } = await usuarioActual();
   if (!auth.user) return { banners: [], conRevision: false };
 
-  const base = 'id, imagen_url, comuna_id, comuna:comunas(nombre), dias, pagado, activo, fecha_fin';
+  const base = 'id, imagen_url, comuna_id, comuna:comunas(nombre), dias, pagado, activo, fecha_fin, created_at';
   const consultar = (columnas: string) =>
     supabase.from('banners').select(columnas).eq('usuario_id', auth.user!.id).order('created_at', { ascending: false });
 
@@ -1530,7 +1550,7 @@ export async function fetchMisBanners(): Promise<{ banners: MiBanner[]; conRevis
     return { banners: filas.map((b) => ({ ...b, estado: 'aprobado' as const })), conRevision: false };
   }
   if (conEstado.error) throw conEstado.error;
-  return { banners: (conEstado.data as unknown as MiBanner[]) ?? [], conRevision: true };
+  return { banners: await quitarSinPagarVencidos((conEstado.data as unknown as MiBanner[]) ?? []), conRevision: true };
 }
 
 /** Un banner esperando revisión, para Aprobar. */
